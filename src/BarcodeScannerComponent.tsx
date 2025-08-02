@@ -12,20 +12,23 @@ const BarcodeScannerComponent: React.FC<BarcodeScannerComponentProps> = ({ onSca
         const scanner = new Html5QrcodeScanner(
             'reader', // ID des HTML-Elements für den Scanner
             {
-                fps: 10, // Bilder pro Sekunde
+                fps: 30, // Bilder pro Sekunde
                 qrbox: { width: 250, height: 150 }, // Ein rechteckiger Sucher ist besser für Barcodes
-                rememberLastUsedCamera: true, // Merkt sich die zuletzt verwendete Kamera
+                rememberLastUsedCamera: true,
+                // Wählt automatisch die Rückkamera und verbessert den Fokus
+                videoConstraints: {
+                    facingMode: 'environment'
+                }
             },
             /* verbose= */ false
         );
 
         scanner.render(onScanSuccess, onScanFailure);
 
-        // Wichtige Aufräumfunktion: Stoppt die Kamera, wenn die Komponente geschlossen wird
+        // Wichtige Aufräumfunktion: Stoppt die Kamera, wenn die Komponente geschlossen wird.
         return () => {
-            scanner.clear().catch(error => {
-                console.error("Fehler beim Beenden des Scanners.", error);
-            });
+            // Stoppt den Scanner nur, wenn er noch läuft. Verhindert Fehler im React StrictMode.
+            scanner.clear().catch(() => { /* Fehler ignorieren, wenn Scanner schon aus ist */ });
         };
     }, [onScanSuccess, onScanFailure]);
 
