@@ -367,6 +367,12 @@ export default function App() {
         );
     }
 
+    // Spezifische Kamera-Einstellungen für einen besseren Autofokus
+    const videoConstraints = {
+        facingMode: 'environment', // Rückkamera bevorzugen
+        focusMode: 'continuous'    // Kontinuierlichen Autofokus aktivieren
+    };
+
     return (
         <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4 antialiased">
             {/* Scanner Modal */}
@@ -374,7 +380,10 @@ export default function App() {
                 <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
                     <div className="bg-white p-4 rounded-lg shadow-xl w-full max-w-md relative">
                         <h3 className="text-lg font-bold text-center mb-4">Barcode scannen</h3>
-                        <BarcodeScanner onUpdate={handleScanResult}/>
+                        <BarcodeScanner
+                            onUpdate={handleScanResult}
+                            videoConstraints={videoConstraints}
+                        />
                         <button
                             onClick={() => setIsScannerOpen(false)}
                             className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
