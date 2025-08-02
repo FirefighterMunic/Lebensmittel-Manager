@@ -14,6 +14,7 @@
     "lucide-react": "^0.303.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-qr-barcode-scanner": "^2.1.8",
     "vercel": "^44.7.0"
   },
   "devDependencies": {
