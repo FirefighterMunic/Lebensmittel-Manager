@@ -8,6 +8,6 @@ yarn-error.log*
 /.pnp
 .pnp.js
 
-.env.local
 .vscode/*
 .vercel
+.env*.local
