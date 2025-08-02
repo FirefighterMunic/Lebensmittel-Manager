@@ -5,8 +5,8 @@ import {initializeApp} from 'firebase/app';
 import {getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut} from 'firebase/auth';
 import {addDoc, collection, deleteDoc, doc, Firestore, getFirestore, onSnapshot, updateDoc} from 'firebase/firestore';
 import {Camera, LogOut, Pencil, Plus, Search, Trash2, X} from 'lucide-react';
-import {addDays, format, isBefore} from 'date-fns';
-import BarcodeScanner from 'react-qr-barcode-scanner';
+import { addDays, format, isBefore } from 'date-fns';
+import BarcodeScannerComponent from './BarcodeScannerComponent'; // Neue Komponente importieren
 
 // Definiere eine Schnittstelle für die Lebensmittel-Objekte
 interface Food {
@@ -190,16 +190,19 @@ export default function App() {
         setLoading(false);
     };
 
-    // Handler für das Ergebnis des Barcode-Scanners
-    const handleScanResult = (err: any, result: any) => {
-        if (result && isScannerOpen) {
-            const scannedBarcode = result.text;
+    // Neuer Handler für erfolgreiche Scans mit html5-qrcode
+    const handleScanSuccess = (decodedText: string, decodedResult: any) => {
+        if (decodedText && isScannerOpen) {
             setIsScannerOpen(false); // Schließt den Scanner sofort
-            setNewFood(prev => ({...prev, barcode: scannedBarcode}));
+            setNewFood(prev => ({ ...prev, barcode: decodedText }));
             // Ruft die Daten für den gescannten Code ab
-            void handleFetchBarcodeData(scannedBarcode);
+            void handleFetchBarcodeData(decodedText);
         }
-        // Fehler werden ignoriert, um die Konsole nicht zu überfluten, da der Scanner kontinuierlich arbeitet
+    };
+
+    // Optionaler Handler für Scan-Fehler (kann leer bleiben, um die Konsole nicht zu überfluten)
+    const handleScanFailure = (error: string) => {
+        // console.warn(`Code scan error = ${error}`);
     };
 
     // Handler zum Hinzufügen/Aktualisieren eines Lebensmittels
@@ -367,12 +370,6 @@ export default function App() {
         );
     }
 
-    // Spezifische Kamera-Einstellungen für einen besseren Autofokus
-    const videoConstraints = {
-        facingMode: 'environment', // Rückkamera bevorzugen
-        focusMode: 'continuous'    // Kontinuierlichen Autofokus aktivieren
-    };
-
     return (
         <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4 antialiased">
             {/* Scanner Modal */}
@@ -380,10 +377,7 @@ export default function App() {
                 <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
                     <div className="bg-white p-4 rounded-lg shadow-xl w-full max-w-md relative">
                         <h3 className="text-lg font-bold text-center mb-4">Barcode scannen</h3>
-                        <BarcodeScanner
-                            onUpdate={handleScanResult}
-                            videoConstraints={videoConstraints}
-                        />
+                        <BarcodeScannerComponent onScanSuccess={handleScanSuccess} onScanFailure={handleScanFailure} />
                         <button
                             onClick={() => setIsScannerOpen(false)}
                             className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
