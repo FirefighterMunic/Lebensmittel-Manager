@@ -204,11 +204,6 @@ export default function App() {
         }
     };
 
-    // Optionaler Handler für Scan-Fehler (kann leer bleiben, um die Konsole nicht zu überfluten)
-    const handleScanFailure = (error: string) => {
-        setShowErrorModal({ visible: true, message: `Scan-Fehler: ${error}` })
-    };
-
     // Handler zum Hinzufügen/Aktualisieren eines Lebensmittels
     const handleAddOrUpdateFood = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
@@ -407,7 +402,7 @@ export default function App() {
                 <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
                     <div className="bg-white p-4 rounded-lg shadow-xl w-full max-w-md relative">
                         <h3 className="text-lg font-bold text-center mb-4">Barcode scannen</h3>
-                        <BarcodeScannerComponent onScanSuccess={handleScanSuccess} onScanFailure={handleScanFailure}/>
+                        <BarcodeScannerComponent onScanSuccess={handleScanSuccess}/>
                         <button
                             onClick={() => setIsScannerOpen(false)}
                             className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
