@@ -311,12 +311,20 @@ export default function App() {
         setLoading(false);
     };
 
-    // Hilfsfunktion, um zu prüfen, ob ein Ablaufdatum bald erreicht ist
+    // Hilfsfunktion, um zu prüfen, ob ein Ablaufdatum in 3 Tagen erreicht ist
     const isExpiringSoon = (date: string) => {
         if (!date) return false;
         const expiryDate = new Date(date);
         const threeDaysFromNow = addDays(new Date(), 3); // addDays ist hier verständlicher
         return isBefore(expiryDate, threeDaysFromNow);
+    };
+
+    // Hilfsfunktion, um zu prüfen, ob ein Ablaufdatum in 7 Tagen erreicht ist
+    const isExpiringInOneWeek = (date: string) => {
+        if (!date) return false;
+        const expiryDate = new Date(date);
+        const sevenDaysFromNow = addDays(new Date(), 7); // addDays ist hier verständlicher
+        return isBefore(expiryDate, sevenDaysFromNow);
     };
 
     // Handler für den Login
@@ -601,7 +609,7 @@ export default function App() {
                                 <div
                                     key={food.id}
                                     className={`flex items-center justify-between p-4 rounded-lg shadow-sm transition-all duration-200 
-                    ${isExpiringSoon(food.expiryDate) ? 'bg-red-50 ring-2 ring-red-400' : 'bg-gray-50 hover:bg-gray-100'}`}
+                    ${isExpiringSoon(food.expiryDate) ? 'bg-red-50 ring-2 ring-red-400' : (isExpiringInOneWeek(food.expiryDate) ? 'bg-yellow-50 ring-2 ring-yellow-400' : 'bg-gray-50 hover:bg-gray-100')}`}
                                 >
                                     <div className="flex items-center space-x-4 flex-1">
                                         {food.image && (
