@@ -5,7 +5,7 @@ import {initializeApp} from 'firebase/app';
 import {getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut} from 'firebase/auth';
 import {addDoc, collection, deleteDoc, doc, Firestore, getFirestore, onSnapshot, updateDoc} from 'firebase/firestore';
 import {Camera, LogOut, Pencil, Plus, Search, Trash2, X} from 'lucide-react';
-import { addDays, format, isBefore } from 'date-fns';
+import {addDays, format, isBefore} from 'date-fns';
 import BarcodeScannerComponent from './BarcodeScannerComponent'; // Neue Komponente importieren
 
 // Definiere eine Schnittstelle für die Lebensmittel-Objekte
@@ -56,6 +56,7 @@ export default function App() {
 
     const [db, setDb] = useState<Firestore | null>(null); // Firestore instance
     const [isScannerOpen, setIsScannerOpen] = useState(false); // State for scanner visibility
+    const [isFetchingBarcode, setIsFetchingBarcode] = useState(false); // Eigener Ladezustand für die Barcode-Suche
 
     // Initialisiere Firebase und authentifiziere den Benutzer
     useEffect(() => {
@@ -143,20 +144,23 @@ export default function App() {
 
     // Handler für den Barcode-Abruf unter Verwendung der Open Food Facts API
     const handleFetchBarcodeData = async (barcodeToFetch?: string) => {
+        // Verhindert die Ausführung, wenn bereits ein anderer Ladevorgang aktiv ist.
+        if (loading || isFetchingBarcode) return;
+
         const barcode = barcodeToFetch || newFood.barcode;
         if (!barcode) {
             setShowErrorModal({visible: true, message: 'Bitte geben Sie einen Barcode ein.'});
             return;
         }
 
-        setLoading(true);
+        setIsFetchingBarcode(true);
         let productData: NewFood | null = null;
 
         try {
             const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode}.json`);
             if (!response.ok) {
                 setShowErrorModal({visible: true, message: 'Netzwerkantwort war nicht ok.'});
-                setLoading(false);
+                setIsFetchingBarcode(false);
                 return;
             }
             const data = await response.json();
@@ -187,14 +191,14 @@ export default function App() {
         if (productData) {
             setNewFood(prev => ({...prev, ...productData}));
         }
-        setLoading(false);
+        setIsFetchingBarcode(false);
     };
 
     // Neuer Handler für erfolgreiche Scans mit html5-qrcode
-    const handleScanSuccess = (decodedText: string, decodedResult: any) => {
+    const handleScanSuccess = (decodedText: string) => {
         if (decodedText && isScannerOpen) {
             setIsScannerOpen(false); // Schließt den Scanner sofort
-            setNewFood(prev => ({ ...prev, barcode: decodedText }));
+            setNewFood(prev => ({...prev, barcode: decodedText}));
             // Ruft die Daten für den gescannten Code ab
             void handleFetchBarcodeData(decodedText);
         }
@@ -202,7 +206,7 @@ export default function App() {
 
     // Optionaler Handler für Scan-Fehler (kann leer bleiben, um die Konsole nicht zu überfluten)
     const handleScanFailure = (error: string) => {
-        // console.warn(`Code scan error = ${error}`);
+        setShowErrorModal({ visible: true, message: `Scan-Fehler: ${error}` })
     };
 
     // Handler zum Hinzufügen/Aktualisieren eines Lebensmittels
@@ -221,7 +225,16 @@ export default function App() {
                 const foodDocRef = doc(db, foodCollectionPath, editingId);
                 await updateDoc(foodDocRef, {...newFood});
                 setEditingId(null);
-                setNewFood({name: '', brands: '', expiryDate: '', location: '', quantity: 1, barcode: '', image: '', storageDate: format(new Date(), 'yyyy-MM-dd')});
+                setNewFood({
+                    name: '',
+                    brands: '',
+                    expiryDate: '',
+                    location: '',
+                    quantity: 1,
+                    barcode: '',
+                    image: '',
+                    storageDate: format(new Date(), 'yyyy-MM-dd')
+                });
             } catch (e) {
                 console.error('Fehler beim Aktualisieren des Eintrags:', e);
             }
@@ -241,7 +254,16 @@ export default function App() {
                     // Neuen Eintrag hinzufügen
                     await addDoc(collection(db, foodCollectionPath), {...newFood});
                 }
-                setNewFood({name: '', brands: '', expiryDate: '', location: '', quantity: 1, barcode: '', image: '', storageDate: format(new Date(), 'yyyy-MM-dd')});
+                setNewFood({
+                    name: '',
+                    brands: '',
+                    expiryDate: '',
+                    location: '',
+                    quantity: 1,
+                    barcode: '',
+                    image: '',
+                    storageDate: format(new Date(), 'yyyy-MM-dd')
+                });
             } catch (e) {
                 console.error('Fehler beim Hinzufügen/Aktualisieren des Eintrags:', e);
             }
@@ -377,7 +399,7 @@ export default function App() {
                 <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
                     <div className="bg-white p-4 rounded-lg shadow-xl w-full max-w-md relative">
                         <h3 className="text-lg font-bold text-center mb-4">Barcode scannen</h3>
-                        <BarcodeScannerComponent onScanSuccess={handleScanSuccess} onScanFailure={handleScanFailure} />
+                        <BarcodeScannerComponent onScanSuccess={handleScanSuccess} onScanFailure={handleScanFailure}/>
                         <button
                             onClick={() => setIsScannerOpen(false)}
                             className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
@@ -408,11 +430,18 @@ export default function App() {
                                     type="text"
                                     id="barcode"
                                     name="barcode"
+                                    disabled={isFetchingBarcode}
                                     value={newFood.barcode}
                                     onChange={handleInputChange}
-                                    onKeyDown={e => {
-                                        if (e.key === "Enter") {
-                                            void handleFetchBarcodeData()
+                                    enterKeyHint="search"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            // Verhindert, dass das Hauptformular abgeschickt wird
+                                            e.preventDefault();
+                                            // Ruft die Daten nur ab, wenn ein Barcode vorhanden ist
+                                            if (newFood.barcode) {
+                                                void handleFetchBarcodeData();
+                                            }
                                         }
                                     }}
                                     placeholder="Barcode eingeben oder scannen"
@@ -420,8 +449,25 @@ export default function App() {
                                 />
                                 <button
                                     type="button"
+                                    onClick={() => void handleFetchBarcodeData()}
+                                    disabled={loading || isFetchingBarcode || !newFood.barcode}
+                                    className="p-2 w-10 h-10 flex items-center justify-center bg-gray-200 text-gray-700 rounded-lg shadow-sm hover:bg-gray-300 transition duration-200 disabled:bg-gray-100 disabled:text-gray-400"
+                                    title="Produktdaten abrufen"
+                                >
+                                    {isFetchingBarcode ? (
+                                        <svg className="animate-spin h-5 w-5 text-gray-700"
+                                             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10"
+                                                    stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor"
+                                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                    ) : <Search className="h-5 w-5"/>}
+                                </button>
+                                <button
+                                    type="button"
                                     onClick={() => setIsScannerOpen(true)}
-                                    disabled={loading}
+                                    disabled={loading || isFetchingBarcode}
                                     className="p-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition duration-200 disabled:bg-gray-400"
                                     title="Kamera-Scanner öffnen"
                                 >
@@ -431,7 +477,8 @@ export default function App() {
                         </div>
 
                         <div>
-                            <label htmlFor="quantity" className="text-sm font-medium text-gray-700">Menge <span className="text-red-500">*</span></label>
+                            <label htmlFor="quantity" className="text-sm font-medium text-gray-700">Menge <span
+                                className="text-red-500">*</span></label>
                             <input
                                 type="number"
                                 id="quantity"
@@ -450,6 +497,7 @@ export default function App() {
                                 type="text"
                                 id="brands"
                                 name="brands"
+                                disabled={isFetchingBarcode}
                                 value={newFood.brands}
                                 onChange={handleInputChange}
                                 placeholder="Markenname"
@@ -458,11 +506,13 @@ export default function App() {
                         </div>
 
                         <div>
-                            <label htmlFor="name" className="text-sm font-medium text-gray-700">Name <span className="text-red-500">*</span></label>
+                            <label htmlFor="name" className="text-sm font-medium text-gray-700">Name <span
+                                className="text-red-500">*</span></label>
                             <input
                                 type="text"
                                 id="name"
                                 name="name"
+                                disabled={isFetchingBarcode}
                                 value={newFood.name}
                                 onChange={handleInputChange}
                                 placeholder="Name des Lebensmittels"
@@ -486,7 +536,8 @@ export default function App() {
 
                         <div>
                             <label htmlFor="storageDate"
-                                   className="text-sm font-medium text-gray-700">Einlagerungsdatum <span className="text-red-500">*</span></label>
+                                   className="text-sm font-medium text-gray-700">Einlagerungsdatum <span
+                                className="text-red-500">*</span></label>
                             <input
                                 type="date"
                                 id="storageDate"
@@ -499,7 +550,8 @@ export default function App() {
                         </div>
 
                         <div>
-                            <label htmlFor="location" className="text-sm font-medium text-gray-700">Lagerort <span className="text-red-500">*</span></label>
+                            <label htmlFor="location" className="text-sm font-medium text-gray-700">Lagerort <span
+                                className="text-red-500">*</span></label>
                             <input
                                 type="text"
                                 id="location"
