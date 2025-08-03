@@ -1,10 +1,10 @@
 /// <reference types="vite/client" />
 
-import React, {ChangeEvent, FormEvent, useEffect, useState} from 'react';
+import React, {ChangeEvent, FormEvent, useEffect, useMemo, useState} from 'react';
 import {initializeApp} from 'firebase/app';
 import {getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut} from 'firebase/auth';
 import {addDoc, collection, deleteDoc, doc, Firestore, getFirestore, onSnapshot, updateDoc} from 'firebase/firestore';
-import {Camera, LogOut, Pencil, Plus, Search, Trash2, X} from 'lucide-react';
+import {Camera, ChevronLeft, ChevronRight, LogOut, Pencil, Plus, Search, Trash2, X} from 'lucide-react';
 import {addDays, format, isBefore} from 'date-fns';
 import BarcodeScannerComponent from './BarcodeScannerComponent'; // Neue Komponente importieren
 
@@ -23,6 +23,33 @@ interface Food {
 
 // Typ für neue Lebensmittel, die noch keine ID haben
 type NewFood = Omit<Food, 'id'>;
+
+// Interface for Open Food Facts API response
+interface OpenFoodFactsProduct {
+    product_name?: string;
+    brands?: string;
+    quantity?: string | number;
+    origins_old?: string;
+    manufacturing_places?: string;
+    nutriments?: {
+        'energy-kcal_100g'?: number;
+        fat_100g?: number;
+        'saturated-fat_100g'?: number;
+        carbohydrates_100g?: number;
+        sugars_100g?: number;
+        proteins_100g?: number;
+        salt_100g?: number;
+    };
+    nutriscore_grade?: string;
+    ecoscore_grade?: string;
+    packaging?: string;
+    image_url?: string;
+
+    [key: string]: any;
+}
+
+type FoodDetails = Food & OpenFoodFactsProduct;
+
 
 // Lade Konfiguration aus den Environment-Variablen (für Vite mit VITE_ Prefix)
 const appId = import.meta.env.VITE_APP_ID || 'default-app-id';
@@ -53,10 +80,35 @@ export default function App() {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [authError, setAuthError] = useState<string | null>(null);
+    const [showDetailsModal, setShowDetailsModal] = useState(false);
+    const [foodForDetails, setFoodForDetails] = useState<FoodDetails | null>(null);
+    const [currentImageIndex, setCurrentImageIndex] = useState(0);
+
 
     const [db, setDb] = useState<Firestore | null>(null); // Firestore instance
     const [isScannerOpen, setIsScannerOpen] = useState(false); // State for scanner visibility
     const [isFetchingBarcode, setIsFetchingBarcode] = useState(false); // Eigener Ladezustand für die Barcode-Suche
+
+    const allImages = useMemo(() => {
+        console.log(foodForDetails)
+        if (!foodForDetails?.image_url) {
+            return [];
+        }
+        try {
+            const foodPics: string[] = []
+
+            for (const key in foodForDetails) {
+                if (key !== "image_url" && key.startsWith('image_') && key.endsWith('_url') && foodForDetails[key].split('.').at(-2) === '400') {
+                    foodPics.push(foodForDetails[key])
+                }
+            }
+            return foodPics
+        } catch (e) {
+            console.error("Fehler beim Erstellen der Bildergalerie-URLs:", e);
+            // Fallback auf ein einzelnes Bild, falls die URL-Konstruktion fehlschlägt
+            return foodForDetails.image_url ? [foodForDetails.image_url] : [];
+        }
+    }, [foodForDetails]);
 
     // Initialisiere Firebase und authentifiziere den Benutzer
     useEffect(() => {
@@ -306,6 +358,42 @@ export default function App() {
         setLoading(false);
     };
 
+    const handleShowDetails = async (food: Food) => {
+        setFoodForDetails(food); // Set basic food info first
+        setShowDetailsModal(true);
+        setCurrentImageIndex(0); // Reset image index
+        console.log(allImages)
+        if (!food.barcode) {
+            // We can show the modal with basic info even if there is no barcode
+            return;
+        }
+
+        setIsFetchingBarcode(true);
+        try {
+            const response = await fetch(`https://world.openfoodfacts.org/api/v2/product/${food.barcode}`);
+            if (!response.ok) {
+                console.error('Netzwerkantwort war nicht ok.');
+                setIsFetchingBarcode(false);
+                return;
+            }
+            const data = await response.json();
+            if (data.status === 1) {
+                // combine existing food data with fetched data
+                setFoodForDetails(prevFood => {
+                    if (!prevFood) return null;
+                    return {...prevFood, ...data['product']};
+                });
+            } else {
+                // Barcode was present but not found on OpenFoodFacts
+                // The modal is already open with basic info, maybe show a small message inside the modal
+            }
+        } catch (error) {
+            console.error('Fehler beim Abrufen der Produktdetails:', error);
+            // Also here, modal is open, maybe show an error message inside it
+        }
+        setIsFetchingBarcode(false);
+    };
+
     // Hilfsfunktion, um zu prüfen, ob ein Ablaufdatum in 3 Tagen erreicht ist
     const isExpiringSoon = (date: string) => {
         if (!date) return false;
@@ -394,6 +482,18 @@ export default function App() {
             </div>
         );
     }
+
+    const DetailRow = ({label, value}: { label: string, value?: string | number | null }) => {
+        if (!value) return null;
+        return (
+            <div className="py-2 sm:grid sm:grid-cols-3 sm:gap-4">
+                <dt className="text-sm font-medium text-gray-500">{label}</dt>
+                <dd className="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{value}</dd>
+            </div>
+        );
+    };
+
+    // const allImages = foodForDetails?.images ? Object.values(foodForDetails.images).map((img: any) => img.display_url || img.thumb_url).filter(Boolean) : [];
 
     return (
         <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4 antialiased">
@@ -629,6 +729,15 @@ export default function App() {
                                         </div>
                                     </div>
                                     <div className="flex space-x-2">
+                                        {food.barcode && (
+                                            <button
+                                                onClick={() => handleShowDetails(food)}
+                                                className="p-2 bg-blue-500 text-white rounded-full shadow-md hover:bg-blue-600 transition duration-200"
+                                                title="Details anzeigen"
+                                            >
+                                                <Search className="h-5 w-5"/>
+                                            </button>
+                                        )}
                                         <button
                                             onClick={() => handleEdit(food)}
                                             className="p-2 bg-yellow-400 text-white rounded-full shadow-md hover:bg-yellow-500 transition duration-200"
@@ -672,6 +781,146 @@ export default function App() {
                                 className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition duration-200"
                             >
                                 Löschen
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Details Modal */}
+            {showDetailsModal && foodForDetails && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                    <div
+                        className="bg-white rounded-xl p-6 shadow-2xl max-w-4xl w-full space-y-4 overflow-y-auto max-h-[95vh]">
+                        <div className="flex justify-between items-start">
+                            <h3 className="text-2xl font-bold text-gray-800">{foodForDetails.product_name || foodForDetails.name}</h3>
+                            <button
+                                onClick={() => {
+                                    setShowDetailsModal(false);
+                                    setFoodForDetails(null);
+                                }}
+                                className="p-2 text-gray-400 hover:text-gray-600"
+                                title="Schließen"
+                            >
+                                <X className="h-6 w-6"/>
+                            </button>
+                        </div>
+
+                        {isFetchingBarcode &&
+                            <p className="text-center text-gray-500 py-8">Lade erweiterte Informationen von Open Food
+                                Facts...</p>}
+
+                        {!isFetchingBarcode && !foodForDetails.product_name && foodForDetails.barcode && (
+                            <p className="text-center text-yellow-600 bg-yellow-50 p-3 rounded-lg">
+                                Produkt mit Barcode <span className="font-mono">{foodForDetails.barcode}</span> nicht
+                                auf Open Food Facts gefunden.
+                            </p>
+                        )}
+
+                        {!isFetchingBarcode && foodForDetails.product_name && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                {/* Left Column: Images */}
+                                <div className="space-y-4">
+                                    <h4 className="text-lg font-bold text-gray-700 border-b pb-2">Bilder</h4>
+                                    {allImages.length > 0 ? (
+                                        <div className="relative">
+                                            <img
+                                                src={allImages[currentImageIndex]}
+                                                alt={`Produktbild ${currentImageIndex + 1} von ${foodForDetails.product_name}`}
+                                                className="w-full h-auto object-contain rounded-lg shadow-md bg-gray-100 min-h-[200px]"
+                                            />
+                                            {allImages.length > 1 && (
+                                                <>
+                                                    <button
+                                                        onClick={() => setCurrentImageIndex(prev => (prev - 1 + allImages.length) % allImages.length)}
+                                                        className="absolute left-2 top-1/2 -translate-y-1/2 bg-black bg-opacity-50 text-white p-2 rounded-full hover:bg-opacity-75 transition"
+                                                    >
+                                                        <ChevronLeft/>
+                                                    </button>
+                                                    <button
+                                                        onClick={() => setCurrentImageIndex(prev => (prev + 1) % allImages.length)}
+                                                        className="absolute right-2 top-1/2 -translate-y-1/2 bg-black bg-opacity-50 text-white p-2 rounded-full hover:bg-opacity-75 transition"
+                                                    >
+                                                        <ChevronRight/>
+                                                    </button>
+                                                    <div
+                                                        className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded-full">
+                                                        {currentImageIndex + 1} / {allImages.length}
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    ) : <p className="text-sm text-gray-500">Keine Bilder verfügbar.</p>}
+                                </div>
+
+                                {/* Right Column: Details */}
+                                <div className="space-y-6">
+                                    <div>
+                                        <h4 className="text-lg font-bold text-gray-700 border-b pb-2 mb-2">Produktinformationen</h4>
+                                        <dl className="divide-y divide-gray-200">
+                                            <DetailRow label="Produkt Name" value={foodForDetails.product_name}/>
+                                            <DetailRow label="Marken" value={foodForDetails.brands}/>
+                                            <DetailRow label="Menge" value={foodForDetails.quantity}/>
+                                            <DetailRow label="Herkunft" value={foodForDetails.origins_old}/>
+                                            <DetailRow label="Herstellungsort"
+                                                       value={foodForDetails.manufacturing_places}/>
+                                        </dl>
+                                    </div>
+
+                                    <div>
+                                        <h4 className="text-lg font-bold text-gray-700 border-b pb-2 mb-2">Nährwertinformationen</h4>
+                                        <dl className="divide-y divide-gray-200">
+                                            <DetailRow label="Energie (pro 100g)"
+                                                       value={`${foodForDetails.nutriments?.['energy-kcal_100g']} kcal`}/>
+                                            <DetailRow label="Fett (pro 100g)"
+                                                       value={`${foodForDetails.nutriments?.fat_100g} g`}/>
+                                            <DetailRow label="davon gesättigte Fettsäuren"
+                                                       value={`${foodForDetails.nutriments?.['saturated-fat_100g']} g`}/>
+                                            <DetailRow label="Kohlenhydrate (pro 100g)"
+                                                       value={`${foodForDetails.nutriments?.carbohydrates_100g} g`}/>
+                                            <DetailRow label="davon Zucker"
+                                                       value={`${foodForDetails.nutriments?.sugars_100g} g`}/>
+                                            <DetailRow label="Eiweiß (pro 100g)"
+                                                       value={`${foodForDetails.nutriments?.proteins_100g} g`}/>
+                                            <DetailRow label="Salz (pro 100g)"
+                                                       value={`${foodForDetails.nutriments?.salt_100g} g`}/>
+                                        </dl>
+                                    </div>
+
+                                    <div>
+                                        <h4 className="text-lg font-bold text-gray-700 border-b pb-2 mb-2">Scores</h4>
+                                        <dl className="divide-y divide-gray-200">
+                                            <DetailRow label="Nutri-Score"
+                                                       value={foodForDetails.nutriscore_grade?.toUpperCase()}/>
+                                            <DetailRow label="Eco-Score"
+                                                       value={foodForDetails.ecoscore_grade?.toUpperCase()}/>
+                                        </dl>
+                                    </div>
+
+                                    <div>
+                                        <h4 className="text-lg font-bold text-gray-700 border-b pb-2 mb-2">Verpackung</h4>
+                                        <DetailRow label="Verpackung" value={foodForDetails.packaging}/>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {!foodForDetails.barcode && (
+                            <p className="text-sm text-center text-gray-500 mt-4 p-3 bg-gray-50 rounded-lg">
+                                Für dieses Produkt ist kein Barcode gespeichert, daher können keine zusätzlichen
+                                Informationen von Open Food Facts geladen werden.
+                            </p>
+                        )}
+
+                        <div className="flex justify-end pt-4 border-t mt-6">
+                            <button
+                                onClick={() => {
+                                    setShowDetailsModal(false);
+                                    setFoodForDetails(null);
+                                }}
+                                className="px-6 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition duration-200"
+                            >
+                                Schließen
                             </button>
                         </div>
                     </div>

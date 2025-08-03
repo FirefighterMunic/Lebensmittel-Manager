@@ -7,10 +7,6 @@ export default function TestApp() {
             id="barcode"
             name="barcode"
             onKeyDown={(e) => {
-                console.log('Key: ' + e.key)
-                console.log('KeyCode: ' + e.keyCode)
-                console.log('CharCode: ' + e.charCode);
-                console.log('Code: ' + e.code);
                 if (e.key === 'Enter') {
                     // Verhindert, dass das Hauptformular abgeschickt wird
                     e.preventDefault();
