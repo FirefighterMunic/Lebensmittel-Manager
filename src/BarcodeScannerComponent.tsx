@@ -12,13 +12,13 @@ function isValidEan(barcode: string): boolean {
     const digits = barcode.split('').map(Number);
     const checkDigit = digits.pop()!; // Die letzte Ziffer ist die Prüfziffer
 
-    let sum = 0;
+    let sum
     if (len === 13) {
         // EAN-13 Prüfsummen-Berechnung (Gewichtung 1, 3, 1, 3, ...)
-        sum = digits.reduce((acc, digit, index) => acc + (index % 2 === 0 ? digit * 1 : digit * 3), 0);
+        sum = digits.reduce((acc, digit, index) => acc + (index % 2 === 0 ? digit : digit * 3), 0);
     } else { // len === 8
         // EAN-8 Prüfsummen-Berechnung (Gewichtung 3, 1, 3, 1, ...)
-        sum = digits.reduce((acc, digit, index) => acc + (index % 2 === 0 ? digit * 3 : digit * 1), 0);
+        sum = digits.reduce((acc, digit, index) => acc + (index % 2 === 0 ? digit * 3 : digit), 0);
     }
 
     const calculatedCheckDigit = (10 - (sum % 10)) % 10;
@@ -34,7 +34,7 @@ interface BarcodeScannerComponentProps {
 const BarcodeScannerComponent: React.FC<BarcodeScannerComponentProps> = (props) => {
     // Ein Ref, um die `props` zu speichern. Dies ermöglicht den Zugriff auf die neuesten
     // Callback-Funktionen im `useEffect`, ohne sie zur Abhängigkeitsliste hinzufügen zu müssen,
-    // was Probleme im Strict Mode (doppeltes Rendern) verhindert.
+    // was Probleme im Strict Mode (doppeltes rendern) verhindert.
     const propsRef = useRef(props);
     useEffect(() => {
         propsRef.current = props;
@@ -54,7 +54,6 @@ const BarcodeScannerComponent: React.FC<BarcodeScannerComponentProps> = (props) 
                 Html5QrcodeSupportedFormats.EAN_8
             ],
             useBarCodeDetectorIfSupported: true,
-            showZoomSliderIfSupported: true,
             showTorchButtonIfSupported: true,
 
         };

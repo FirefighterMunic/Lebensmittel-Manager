@@ -247,16 +247,13 @@ export default function App() {
     };
 
     // Neuer Handler für erfolgreiche Scans mit html5-qrcode
-    const handleScanSuccess = useCallback((decodedText: string, decodedResult: any) => {
-        // Diese Funktion wird stabil, da sie keine externen State-Variablen direkt liest.
-        // Sie verwendet die Callback-Form von `setIsScannerOpen`, um Race Conditions zu vermeiden.
-        setIsScannerOpen(currentValue => {
-            if (decodedText && currentValue) {
-                setNewFood(prev => ({...prev, barcode: decodedText}));
-                void handleFetchBarcodeData(decodedText);
-            }
-            return false; // Schließt den Scanner in jedem Fall nach dem ersten erfolgreichen Scan.
-        });
+    const handleScanSuccess = useCallback((decodedText: string) => {
+        if (decodedText && isScannerOpen) {
+            setIsScannerOpen(false); // Schließt den Scanner sofort
+            setNewFood(prev => ({...prev, barcode: decodedText}));
+            // Ruft die Daten für den gescannten Code ab
+            void handleFetchBarcodeData(decodedText);
+        }
     }, []); // Leere Abhängigkeiten machen die Funktion stabil und verhindern unnötige Neuausführungen des Scanner-Effekts.
 
     // Handler zum Hinzufügen/Aktualisieren eines Lebensmittels
