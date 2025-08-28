@@ -1,12 +1,13 @@
 /// <reference types="vite/client" />
 
-import React, {ChangeEvent, FormEvent, useEffect, useMemo, useState} from 'react';
+import React, {ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState, memo} from 'react';
 import {initializeApp} from 'firebase/app';
 import {getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut} from 'firebase/auth';
 import {addDoc, collection, deleteDoc, doc, Firestore, getFirestore, onSnapshot, updateDoc} from 'firebase/firestore';
-import {Camera, ChevronLeft, ChevronRight, LogOut, Pencil, Plus, Search, Trash2, X} from 'lucide-react';
+import {ArrowDown, ArrowUp, Camera, ChevronLeft, ChevronRight, LogOut, Pencil, Plus, Search, Trash2, X} from 'lucide-react';
 import {addDays, format, isBefore} from 'date-fns';
-import BarcodeScannerComponent from './BarcodeScannerComponent'; // Neue Komponente importieren
+import BarcodeScannerComponent from './BarcodeScannerComponent';
+// import BarcodeScannerComponentNew from "./BarcodeScannerComponentNew";
 
 // Definiere eine Schnittstelle für die Lebensmittel-Objekte
 interface Food {
@@ -50,6 +51,22 @@ interface OpenFoodFactsProduct {
 
 type FoodDetails = Food & OpenFoodFactsProduct;
 
+// Hilfsfunktion, um zu prüfen, ob ein Ablaufdatum in 3 Tagen erreicht ist
+const isExpiringSoon = (date: string) => {
+    if (!date) return false;
+    const expiryDate = new Date(date);
+    const threeDaysFromNow = addDays(new Date(), 3);
+    return isBefore(expiryDate, threeDaysFromNow);
+};
+
+// Hilfsfunktion, um zu prüfen, ob ein Ablaufdatum in 7 Tagen erreicht ist
+const isExpiringInOneWeek = (date: string) => {
+    if (!date) return false;
+    const expiryDate = new Date(date);
+    const sevenDaysFromNow = addDays(new Date(), 7);
+    return isBefore(expiryDate, sevenDaysFromNow);
+};
+
 
 // Lade Konfiguration aus den Environment-Variablen (für Vite mit VITE_ Prefix)
 const appId = import.meta.env.VITE_APP_ID || 'default-app-id';
@@ -57,9 +74,10 @@ const firebaseConfigString = import.meta.env.VITE_FIREBASE_CONFIG;
 const firebaseConfig = firebaseConfigString ? JSON.parse(firebaseConfigString) : {};
 
 // Die Haupt-App-Komponente
-export default function App() {
+function App() {
+    // console.log('App-Komponente wird neu gerendert...');
     const [foods, setFoods] = useState<Food[]>([]);
-    const [newFood, setNewFood] = useState<NewFood>({
+    const initialNewFoodState: NewFood = {
         name: '',
         brands: '',
         expiryDate: '',
@@ -68,15 +86,13 @@ export default function App() {
         quantity: 1,
         barcode: '',
         image: ''
-    });
-    const [editingId, setEditingId] = useState<string | null>(null);
+    };
     const [loading, setLoading] = useState(true);
     const [isAuthReady, setIsAuthReady] = useState(false);
     const [userId, setUserId] = useState<string | null>(null);
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [foodToDelete, setFoodToDelete] = useState<Food | null>(null);
     const [showErrorModal, setShowErrorModal] = useState({visible: false, message: ''});
-    const [searchTerm, setSearchTerm] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [authError, setAuthError] = useState<string | null>(null);
@@ -86,11 +102,11 @@ export default function App() {
 
 
     const [db, setDb] = useState<Firestore | null>(null); // Firestore instance
-    const [isScannerOpen, setIsScannerOpen] = useState(false); // State for scanner visibility
-    const [isFetchingBarcode, setIsFetchingBarcode] = useState(false); // Eigener Ladezustand für die Barcode-Suche
+    const [foodToEdit, setFoodToEdit] = useState<Food | null>(null);
+    const [isFetchingBarcode, setIsFetchingBarcode] = useState(false); // Für Details-Modal
 
     const allImages = useMemo(() => {
-        console.log(foodForDetails)
+        // console.log(foodForDetails)
         if (!foodForDetails?.image_url) {
             return [];
         }
@@ -161,23 +177,6 @@ export default function App() {
             querySnapshot.forEach((doc) => {
                 items.push({id: doc.id, ...doc.data()} as Food);
             });
-            // Sortiere die Lebensmittel nach Ablaufdatum
-            items.sort((a, b) => {
-                const aHasDate = a.expiryDate && a.expiryDate !== '';
-                const bHasDate = b.expiryDate && b.expiryDate !== '';
-
-                if (aHasDate && !bHasDate) {
-                    return -1; // a (mit Datum) kommt vor b (ohne Datum)
-                }
-                if (!aHasDate && bHasDate) {
-                    return 1; // b (mit Datum) kommt vor a (ohne Datum)
-                }
-                if (!aHasDate && !bHasDate) {
-                    return 0; // Beide haben kein Datum, Reihenfolge egal
-                }
-                // Beide haben ein Datum, sortiere chronologisch aufsteigend
-                return new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime();
-            });
             setFoods(items);
             setLoading(false);
         }, (error) => {
@@ -188,156 +187,61 @@ export default function App() {
         return () => unsubscribe();
     }, [isAuthReady, db, userId]); // <-- WICHTIG: userId als Abhängigkeit hinzufügen
 
-    // Handler für Formularänderungen
-    const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
-        const {name, value} = e.target;
-        setNewFood(prev => ({...prev, [name]: name === 'quantity' ? (parseInt(value, 10) || 1) : value}));
-    };
-
-    // Handler für den Barcode-Abruf unter Verwendung der Open Food Facts API
-    const handleFetchBarcodeData = async (barcodeToFetch?: string) => {
-        // Verhindert die Ausführung, wenn bereits ein anderer Ladevorgang aktiv ist.
-        if (loading || isFetchingBarcode) return;
-
-        const barcode = barcodeToFetch || newFood.barcode;
-        if (!barcode) {
-            setShowErrorModal({visible: true, message: 'Bitte geben Sie einen Barcode ein.'});
-            return;
-        }
-
-        setIsFetchingBarcode(true);
-        let productData: NewFood | null = null;
-
-        try {
-            const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode}.json`);
-            if (!response.ok) {
-                setShowErrorModal({visible: true, message: 'Netzwerkantwort war nicht ok.'});
-                setIsFetchingBarcode(false);
-                return;
-            }
-            const data = await response.json();
-
-            if (data.status === 1) {
-                const product = data["product"];
-                productData = {
-                    name: product.product_name || '',
-                    brands: product.brands || '',
-                    location: '',
-                    barcode: barcode,
-                    quantity: 1,
-                    expiryDate: '',
-                    storageDate: format(new Date(), 'yyyy-MM-dd'),
-                    image: product.image_small_url || ''
-                };
-            } else {
-                setShowErrorModal({visible: true, message: 'Produkt nicht gefunden. Bitte manuell eingeben.'});
-            }
-        } catch (error) {
-            console.error('Fehler beim Abrufen der Produktdaten:', error);
-            setShowErrorModal({
-                visible: true,
-                message: 'Fehler beim Abrufen der Produktdaten. Bitte versuchen Sie es erneut.'
-            });
-        }
-
-        if (productData) {
-            setNewFood(prev => ({...prev, ...productData}));
-        }
-        setIsFetchingBarcode(false);
-    };
-
-    // Neuer Handler für erfolgreiche Scans mit html5-qrcode
-    const handleScanSuccess = (decodedText: string) => {
-        if (decodedText && isScannerOpen) {
-            setIsScannerOpen(false); // Schließt den Scanner sofort
-            setNewFood(prev => ({...prev, barcode: decodedText}));
-            // Ruft die Daten für den gescannten Code ab
-            void handleFetchBarcodeData(decodedText);
-        }
-    };
-
     // Handler zum Hinzufügen/Aktualisieren eines Lebensmittels
-    const handleAddOrUpdateFood = async (e: FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
+    const handleAddOrUpdateFood = async (foodData: NewFood, editingId: string | null) => {
         if (!db) {
             console.error('Firestore ist nicht verfügbar.');
             return;
         }
-        setLoading(true);
         const foodCollectionPath = `artifacts/${appId}/foodItems`;
 
         if (editingId) {
             // Eintrag aktualisieren
             try {
                 const foodDocRef = doc(db, foodCollectionPath, editingId);
-                await updateDoc(foodDocRef, {...newFood});
-                setEditingId(null);
-                setNewFood({
-                    name: '',
-                    brands: '',
-                    expiryDate: '',
-                    location: '',
-                    quantity: 1,
-                    barcode: '',
-                    image: '',
-                    storageDate: format(new Date(), 'yyyy-MM-dd')
-                });
+                await updateDoc(foodDocRef, {...foodData});
+                setFoodToEdit(null); // Signal to form to reset
             } catch (e) {
                 console.error('Fehler beim Aktualisieren des Eintrags:', e);
             }
         } else {
             // Neuen Eintrag hinzufügen oder Menge aktualisieren
             const existingFood = foods.find(
-                f => f.name === newFood.name && f.brands === newFood.brands && f.expiryDate === newFood.expiryDate && f.location === newFood.location
+                f => f.name === foodData.name && f.brands === foodData.brands && f.expiryDate === foodData.expiryDate && f.location === foodData.location
             );
 
             try {
                 if (existingFood) {
                     // Menge des bestehenden Eintrags aktualisieren
                     const foodDocRef = doc(db, foodCollectionPath, existingFood.id);
-                    const newQuantity = existingFood.quantity + newFood.quantity;
+                    const newQuantity = existingFood.quantity + foodData.quantity;
                     await updateDoc(foodDocRef, {quantity: newQuantity});
                 } else {
                     // Neuen Eintrag hinzufügen
-                    await addDoc(collection(db, foodCollectionPath), {...newFood});
+                    await addDoc(collection(db, foodCollectionPath), {...foodData});
                 }
-                setNewFood({
-                    name: '',
-                    brands: '',
-                    expiryDate: '',
-                    location: '',
-                    quantity: 1,
-                    barcode: '',
-                    image: '',
-                    storageDate: format(new Date(), 'yyyy-MM-dd')
-                });
+                setFoodToEdit(null); // Signal to form to reset
             } catch (e) {
                 console.error('Fehler beim Hinzufügen/Aktualisieren des Eintrags:', e);
             }
         }
-        setLoading(false);
     };
 
     // Handler zum Bearbeiten eines Eintrags
-    const handleEdit = (food: Food) => {
-        setEditingId(food.id);
-        setNewFood({
-            name: food.name,
-            brands: food.brands,
-            expiryDate: food.expiryDate,
-            storageDate: food.storageDate,
-            location: food.location,
-            quantity: food.quantity,
-            barcode: food.barcode || '',
-            image: food.image || ''
-        });
+    const handleEdit = useCallback((food: Food) => {
+        setFoodToEdit(food);
+        window.scroll(0, 0)
+    }, []);
+
+    const handleCancelEdit = () => {
+        setFoodToEdit(null);
     };
 
     // Handler zum Löschen eines Eintrags (bestätigen)
-    const handleDeleteConfirm = (food: Food) => {
+    const handleDeleteConfirm = useCallback((food: Food) => {
         setFoodToDelete(food);
         setShowDeleteModal(true);
-    };
+    }, []);
 
     // Handler zum Ausführen des Löschvorgangs
     const handleDelete = async () => {
@@ -358,11 +262,10 @@ export default function App() {
         setLoading(false);
     };
 
-    const handleShowDetails = async (food: Food) => {
+    const handleShowDetails = useCallback(async (food: Food) => {
         setFoodForDetails(food); // Set basic food info first
         setShowDetailsModal(true);
         setCurrentImageIndex(0); // Reset image index
-        console.log(allImages)
         if (!food.barcode) {
             // We can show the modal with basic info even if there is no barcode
             return;
@@ -392,23 +295,7 @@ export default function App() {
             // Also here, modal is open, maybe show an error message inside it
         }
         setIsFetchingBarcode(false);
-    };
-
-    // Hilfsfunktion, um zu prüfen, ob ein Ablaufdatum in 3 Tagen erreicht ist
-    const isExpiringSoon = (date: string) => {
-        if (!date) return false;
-        const expiryDate = new Date(date);
-        const threeDaysFromNow = addDays(new Date(), 3); // addDays ist hier verständlicher
-        return isBefore(expiryDate, threeDaysFromNow);
-    };
-
-    // Hilfsfunktion, um zu prüfen, ob ein Ablaufdatum in 7 Tagen erreicht ist
-    const isExpiringInOneWeek = (date: string) => {
-        if (!date) return false;
-        const expiryDate = new Date(date);
-        const sevenDaysFromNow = addDays(new Date(), 7); // addDays ist hier verständlicher
-        return isBefore(expiryDate, sevenDaysFromNow);
-    };
+    }, []);
 
     // Handler für den Login
     const handleLogin = async (e: FormEvent<HTMLFormElement>) => {
@@ -436,12 +323,11 @@ export default function App() {
         }
     };
 
-    // Gefilterte Liste basierend auf dem Suchbegriff
-    const filteredFoods = foods.filter(food =>
-        (food.name && food.name.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (food.brands && food.brands.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (food.location && food.location.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
+    const uniqueLocations = useMemo(() => {
+        // Erstellt eine Liste eindeutiger, sortierter Lagerorte aus den vorhandenen Lebensmitteln.
+        const locations = new Set(foods.map(food => food.location).filter(Boolean));
+        return Array.from(locations).sort();
+    }, [foods]);
 
     if (!isAuthReady) {
         return (
@@ -493,26 +379,222 @@ export default function App() {
         );
     };
 
+    const FoodListItem = React.memo(({food, onEdit, onDelete, onShowDetails}: {
+        food: Food;
+        onEdit: (food: Food) => void;
+        onDelete: (food: Food) => void;
+        onShowDetails: (food: Food) => void;
+    }) => {
+        // console.log(`FoodListItem wird gerendert für: ${food.name}`);
+        return (
+            <div
+                className={`flex items-center justify-between p-4 rounded-lg shadow-sm transition-all duration-200 
+                    ${isExpiringSoon(food.expiryDate) ? 'bg-red-50 ring-2 ring-red-400' : (isExpiringInOneWeek(food.expiryDate) ? 'bg-yellow-50 ring-2 ring-yellow-400' : 'bg-gray-50 hover:bg-gray-100')}`}
+            >
+                <div className="flex items-center space-x-4 flex-1">
+                    {food.image && (
+                        <img
+                            src={food.image}
+                            alt={`Bild von ${food.name}`}
+                            className="w-16 h-16 object-cover rounded-lg shadow-sm"
+                            onError={(e) => {
+                                const target = e.target as HTMLImageElement;
+                                target.onerror = null;
+                                target.src = `https://placehold.co/64x64/E2E8F0/1A202C?text=Kein+Bild`;
+                            }}
+                        />
+                    )}
+                    <div>
+                        <p className="text-lg font-semibold text-gray-800">
+                            {food.brands ? `${food.brands} - ` : ''}{food.name}
+                        </p>
+                        <p className="text-sm text-gray-600">Ablaufdatum: {food.expiryDate ? format(new Date(food.expiryDate), 'dd.MM.yyyy') : 'Unbekannt'}</p>
+                        <p className="text-sm text-gray-600">Einlagerungsdatum: {food.storageDate ? format(new Date(food.storageDate), 'dd.MM.yyyy') : 'Unbekannt'}</p>
+                        <p className="text-sm text-gray-600">Lagerort: {food.location}</p>
+                        <p className="text-sm text-gray-600">Menge: {food.quantity}</p>
+                    </div>
+                </div>
+                <div className="flex space-x-2">
+                    {food.barcode && (
+                        <button
+                            onClick={() => onShowDetails(food)}
+                            className="p-2 bg-blue-500 text-white rounded-full shadow-md hover:bg-blue-600 transition duration-200"
+                            title="Details anzeigen"
+                        >
+                            <Search className="h-5 w-5"/>
+                        </button>
+                    )}
+                    <button
+                        onClick={() => onEdit(food)}
+                        className="p-2 bg-yellow-400 text-white rounded-full shadow-md hover:bg-yellow-500 transition duration-200"
+                        title="Bearbeiten"
+                    >
+                        <Pencil className="h-5 w-5"/>
+                    </button>
+                    <button
+                        onClick={() => onDelete(food)}
+                        className="p-2 bg-red-500 text-white rounded-full shadow-md hover:bg-red-600 transition duration-200"
+                        title="Löschen"
+                    >
+                        <Trash2 className="h-5 w-5"/>
+                    </button>
+                </div>
+            </div>
+        );
+    });
+    FoodListItem.displayName = 'FoodListItem';
+
+    const FoodListSection = memo(({foods, onEdit, onDelete, onShowDetails, loading}: {
+        foods: Food[],
+        onEdit: (food: Food) => void,
+        onDelete: (food: Food) => void,
+        onShowDetails: (food: Food) => void,
+        loading: boolean
+    }) => {
+        // console.log('FoodListSection wird gerendert');
+        const [searchTerm, setSearchTerm] = useState('');
+        const [sortConfig, setSortConfig] = useState({key: 'expiryDate', direction: 'asc'});
+        const [isSearchScannerOpen, setIsSearchScannerOpen] = useState(false);
+
+        const handleSearchScanSuccess = (decodedText: string) => {
+            if (decodedText) {
+                setIsSearchScannerOpen(false);
+                setSearchTerm(decodedText);
+            }
+        };
+
+        const sortedAndFilteredFoods = useMemo(() => {
+            // console.time('Berechnung der Lebensmittelliste');
+            const filtered = foods.filter(food =>
+                (food.name && food.name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+                (food.brands && food.brands.toLowerCase().includes(searchTerm.toLowerCase())) ||
+                (food.location && food.location.toLowerCase().includes(searchTerm.toLowerCase())) ||
+                (food.barcode && food.barcode.includes(searchTerm))
+            );
+
+            const sorted = [...filtered].sort((a, b) => {
+                const key = sortConfig.key as keyof Food;
+                const valA = a[key];
+                const valB = b[key];
+                const aHasValue = valA !== null && valA !== '';
+                const bHasValue = valB !== null && valB !== '';
+
+                if (aHasValue && !bHasValue) return -1;
+                if (!aHasValue && bHasValue) return 1;
+                if (!aHasValue && !bHasValue) return 0;
+
+                let comparison;
+                if (key === 'expiryDate' || key === 'storageDate') {
+                    comparison = new Date(valA as string).getTime() - new Date(valB as string).getTime();
+                } else {
+                    comparison = String(valA).localeCompare(String(valB), undefined, {numeric: true});
+                }
+                return sortConfig.direction === 'asc' ? comparison : -comparison;
+            });
+            // console.timeEnd('Berechnung der Lebensmittelliste');
+            return sorted;
+        }, [foods, searchTerm, sortConfig]);
+
+        return (
+            <>
+                {/* Search Scanner Modal */}
+                {isSearchScannerOpen && (
+                    <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
+                        <div className="bg-white p-4 rounded-lg shadow-xl w-full max-w-md relative">
+                            <h3 className="text-lg font-bold text-center mb-4">Barcode für Suche scannen</h3>
+                            <BarcodeScannerComponent onScanSuccess={handleSearchScanSuccess}/>
+                            <button
+                                onClick={() => setIsSearchScannerOpen(false)}
+                                className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
+                                title="Scanner schließen"
+                            >
+                                <X className="h-5 w-5"/>
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Suchleiste */}
+                <div className="relative mt-8">
+                    <div className="flex items-center space-x-2">
+                        <div className="relative flex-grow">
+                            <input
+                                type="text"
+                                placeholder="Suchen nach Name, Marke, Lagerort oder Barcode..."
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                className="w-full px-4 py-2 pl-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                            />
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400"/>
+                        </div>
+                        <button type="button" onClick={() => setIsSearchScannerOpen(true)}
+                                className="p-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition duration-200"
+                                title="Barcode für Suche scannen">
+                            <Camera className="h-5 w-5"/>
+                        </button>
+                    </div>
+                </div>
+
+                {/* Lebensmittelliste */}
+                <div className="mt-8">
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-2xl font-bold text-gray-700">Ihre Lebensmittel</h2>
+                        <div className="flex items-center space-x-2">
+                            <label htmlFor="sort-select" className="text-sm font-medium text-gray-700">Sortieren
+                                nach:</label>
+                            <select
+                                id="sort-select"
+                                value={sortConfig.key}
+                                onChange={(e) => setSortConfig({...sortConfig, key: e.target.value})}
+                                className="px-3 py-1.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 transition duration-200 text-sm"
+                            >
+                                <option value="expiryDate">Ablaufdatum</option>
+                                <option value="name">Name</option>
+                                <option value="storageDate">Einlagerungsdatum</option>
+                                <option value="location">Lagerort</option>
+                                <option value="brands">Marke</option>
+                                <option value="quantity">Menge</option>
+                            </select>
+                            <button
+                                onClick={() => setSortConfig({
+                                    ...sortConfig,
+                                    direction: sortConfig.direction === 'asc' ? 'desc' : 'asc'
+                                })}
+                                className="p-2 text-gray-600 rounded-full hover:bg-gray-200 transition"
+                                title={`Sortierreihenfolge umschalten (${sortConfig.direction === 'asc' ? 'aufsteigend' : 'absteigend'})`}
+                            >
+                                {sortConfig.direction === 'asc' ? <ArrowUp className="h-5 w-5"/> :
+                                    <ArrowDown className="h-5 w-5"/>}
+                            </button>
+                        </div>
+                    </div>
+                    {loading && <p className="text-center text-gray-500">Lädt...</p>}
+                    {!loading && sortedAndFilteredFoods.length === 0 &&
+                        <p className="text-center text-gray-500">Keine Lebensmittel gefunden.</p>}
+                    {!loading && sortedAndFilteredFoods.length > 0 && (
+                        <div className="space-y-4">
+                            {sortedAndFilteredFoods.map((food) => (
+                                <FoodListItem
+                                    key={food.id}
+                                    food={food}
+                                    onEdit={onEdit}
+                                    onDelete={onDelete}
+                                    onShowDetails={onShowDetails}
+                                />
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </>
+        );
+    });
+    FoodListSection.displayName = 'FoodListSection';
+
+
     // const allImages = foodForDetails?.images ? Object.values(foodForDetails.images).map((img: any) => img.display_url || img.thumb_url).filter(Boolean) : [];
 
     return (
         <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4 antialiased">
-            {/* Scanner Modal */}
-            {isScannerOpen && (
-                <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
-                    <div className="bg-white p-4 rounded-lg shadow-xl w-full max-w-md relative">
-                        <h3 className="text-lg font-bold text-center mb-4">Barcode scannen</h3>
-                        <BarcodeScannerComponent onScanSuccess={handleScanSuccess}/>
-                        <button
-                            onClick={() => setIsScannerOpen(false)}
-                            className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
-                            title="Scanner schließen"
-                        >
-                            <X className="h-5 w-5"/>
-                        </button>
-                    </div>
-                </div>
-            )}
             <div className="max-w-4xl w-full bg-white shadow-xl rounded-2xl p-8 space-y-8">
                 <header className="text-center relative">
                     <h1 className="text-4xl font-extrabold text-gray-800">Lebensmittel-Manager</h1>
@@ -523,241 +605,18 @@ export default function App() {
                     </button>
                 </header>
 
-                {/* Formular zum Hinzufügen/Bearbeiten */}
-                <form onSubmit={handleAddOrUpdateFood} className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-                        <div className="md:col-span-2">
-                            <label htmlFor="barcode" className="text-sm font-medium text-gray-700">Barcode</label>
-                            <div className="flex space-x-2 mt-1">
-                                <input
-                                    type="text"
-                                    id="barcode"
-                                    name="barcode"
-                                    disabled={isFetchingBarcode}
-                                    value={newFood.barcode}
-                                    onChange={handleInputChange}
-                                    enterKeyHint="search"
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                            // Verhindert, dass das Hauptformular abgeschickt wird
-                                            e.preventDefault();
-                                            // Ruft die Daten nur ab, wenn ein Barcode vorhanden ist
-                                            if (newFood.barcode) {
-                                                void handleFetchBarcodeData();
-                                            }
-                                        }
-                                    }}
-                                    placeholder="Barcode eingeben oder scannen"
-                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                                />
-                                <button
-                                    type="button"
-                                    onClick={() => void handleFetchBarcodeData()}
-                                    disabled={loading || isFetchingBarcode || !newFood.barcode}
-                                    className="p-2 w-10 h-10 flex items-center justify-center bg-gray-200 text-gray-700 rounded-lg shadow-sm hover:bg-gray-300 transition duration-200 disabled:bg-gray-100 disabled:text-gray-400"
-                                    title="Produktdaten abrufen"
-                                >
-                                    {isFetchingBarcode ? (
-                                        <svg className="animate-spin h-5 w-5 text-gray-700"
-                                             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                            <circle className="opacity-25" cx="12" cy="12" r="10"
-                                                    stroke="currentColor" strokeWidth="4"></circle>
-                                            <path className="opacity-75" fill="currentColor"
-                                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
-                                    ) : <Search className="h-5 w-5"/>}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setIsScannerOpen(true)}
-                                    disabled={loading || isFetchingBarcode}
-                                    className="p-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition duration-200 disabled:bg-gray-400"
-                                    title="Kamera-Scanner öffnen"
-                                >
-                                    <Camera className="h-5 w-5"/>
-                                </button>
-                            </div>
-                        </div>
+                <FoodForm
+                    onAddOrUpdateFood={handleAddOrUpdateFood}
+                    foodToEdit={foodToEdit}
+                    onCancelEdit={handleCancelEdit}
+                    uniqueLocations={uniqueLocations}
+                    initialNewFoodState={initialNewFoodState}
+                    onShowError={setShowErrorModal}
+                />
 
-                        <div>
-                            <label htmlFor="quantity" className="text-sm font-medium text-gray-700">Menge <span
-                                className="text-red-500">*</span></label>
-                            <input
-                                type="number"
-                                id="quantity"
-                                name="quantity"
-                                value={newFood.quantity}
-                                onChange={handleInputChange}
-                                min="1"
-                                required
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
+                <FoodListSection foods={foods} onEdit={handleEdit} onDelete={handleDeleteConfirm}
+                                 onShowDetails={handleShowDetails} loading={loading}/>
 
-                        <div>
-                            <label htmlFor="brands" className="text-sm font-medium text-gray-700">Marke</label>
-                            <input
-                                type="text"
-                                id="brands"
-                                name="brands"
-                                disabled={isFetchingBarcode}
-                                value={newFood.brands}
-                                onChange={handleInputChange}
-                                placeholder="Markenname"
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
-
-                        <div>
-                            <label htmlFor="name" className="text-sm font-medium text-gray-700">Name <span
-                                className="text-red-500">*</span></label>
-                            <input
-                                type="text"
-                                id="name"
-                                name="name"
-                                disabled={isFetchingBarcode}
-                                value={newFood.name}
-                                onChange={handleInputChange}
-                                placeholder="Name des Lebensmittels"
-                                required
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
-
-                        <div>
-                            <label htmlFor="expiryDate"
-                                   className="text-sm font-medium text-gray-700">Ablaufdatum</label>
-                            <input
-                                type="date"
-                                id="expiryDate"
-                                name="expiryDate"
-                                value={newFood.expiryDate}
-                                onChange={handleInputChange}
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
-
-                        <div>
-                            <label htmlFor="storageDate"
-                                   className="text-sm font-medium text-gray-700">Einlagerungsdatum <span
-                                className="text-red-500">*</span></label>
-                            <input
-                                type="date"
-                                id="storageDate"
-                                name="storageDate"
-                                value={newFood.storageDate}
-                                onChange={handleInputChange}
-                                required
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
-
-                        <div>
-                            <label htmlFor="location" className="text-sm font-medium text-gray-700">Lagerort <span
-                                className="text-red-500">*</span></label>
-                            <input
-                                type="text"
-                                id="location"
-                                name="location"
-                                value={newFood.location}
-                                onChange={handleInputChange}
-                                placeholder="Lagerort (z.B. Kühlschrank)"
-                                required
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
-
-                        <div className="md:col-span-4">
-                            <button
-                                type="submit"
-                                disabled={loading || !newFood.name || !newFood.location || !newFood.quantity}
-                                className="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition duration-200 disabled:bg-gray-400 flex items-center justify-center space-x-2"
-                            >
-                                {loading ? 'Lädt...' : editingId ? 'Speichern' : 'Hinzufügen'}
-                                {!loading && !editingId && <Plus className="inline-block h-5 w-5"/>}
-                            </button>
-                        </div>
-                    </div>
-                </form>
-
-                {/* Suchleiste */}
-                <div className="relative mt-8">
-                    <input
-                        type="text"
-                        placeholder="Suchen nach Name, Marke oder Lagerort..."
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        className="w-full px-4 py-2 pl-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                    />
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400"/>
-                </div>
-
-                {/* Lebensmittelliste */}
-                <div className="mt-8">
-                    <h2 className="text-2xl font-bold text-gray-700 mb-4">Ihre Lebensmittel</h2>
-                    {loading && <p className="text-center text-gray-500">Lädt...</p>}
-                    {!loading && filteredFoods.length === 0 &&
-                        <p className="text-center text-gray-500">Keine Lebensmittel gefunden.</p>}
-                    {!loading && filteredFoods.length > 0 && (
-                        <div className="space-y-4">
-                            {filteredFoods.map((food) => (
-                                <div
-                                    key={food.id}
-                                    className={`flex items-center justify-between p-4 rounded-lg shadow-sm transition-all duration-200 
-                    ${isExpiringSoon(food.expiryDate) ? 'bg-red-50 ring-2 ring-red-400' : (isExpiringInOneWeek(food.expiryDate) ? 'bg-yellow-50 ring-2 ring-yellow-400' : 'bg-gray-50 hover:bg-gray-100')}`}
-                                >
-                                    <div className="flex items-center space-x-4 flex-1">
-                                        {food.image && (
-                                            <img
-                                                src={food.image}
-                                                alt={`Bild von ${food.name}`}
-                                                className="w-16 h-16 object-cover rounded-lg shadow-sm"
-                                                onError={(e) => {
-                                                    const target = e.target as HTMLImageElement;
-                                                    target.onerror = null;
-                                                    target.src = `https://placehold.co/64x64/E2E8F0/1A202C?text=Kein+Bild`;
-                                                }}
-                                            />
-                                        )}
-                                        <div>
-                                            <p className="text-lg font-semibold text-gray-800">
-                                                {food.brands ? `${food.brands} - ` : ''}{food.name}
-                                            </p>
-                                            <p className="text-sm text-gray-600">Ablaufdatum: {food.expiryDate ? format(new Date(food.expiryDate), 'dd.MM.yyyy') : 'Unbekannt'}</p>
-                                            <p className="text-sm text-gray-600">Lagerort: {food.location}</p>
-                                            <p className="text-sm text-gray-600">Menge: {food.quantity}</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex space-x-2">
-                                        {food.barcode && (
-                                            <button
-                                                onClick={() => handleShowDetails(food)}
-                                                className="p-2 bg-blue-500 text-white rounded-full shadow-md hover:bg-blue-600 transition duration-200"
-                                                title="Details anzeigen"
-                                            >
-                                                <Search className="h-5 w-5"/>
-                                            </button>
-                                        )}
-                                        <button
-                                            onClick={() => handleEdit(food)}
-                                            className="p-2 bg-yellow-400 text-white rounded-full shadow-md hover:bg-yellow-500 transition duration-200"
-                                            title="Bearbeiten"
-                                        >
-                                            <Pencil className="h-5 w-5"/>
-                                        </button>
-                                        <button
-                                            onClick={() => handleDeleteConfirm(food)}
-                                            className="p-2 bg-red-500 text-white rounded-full shadow-md hover:bg-red-600 transition duration-200"
-                                            title="Löschen"
-                                        >
-                                            <Trash2 className="h-5 w-5"/>
-                                        </button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
             </div>
 
             {/* Löschbestätigungsmodal */}
@@ -947,3 +806,292 @@ export default function App() {
         </div>
     );
 }
+
+const FoodForm = memo(({onAddOrUpdateFood, foodToEdit, onCancelEdit, uniqueLocations, initialNewFoodState, onShowError}: {
+    onAddOrUpdateFood: (foodData: NewFood, editingId: string | null) => Promise<void>,
+    foodToEdit: Food | null,
+    onCancelEdit: () => void,
+    uniqueLocations: string[],
+    initialNewFoodState: NewFood,
+    onShowError: (error: { visible: boolean, message: string }) => void
+}) => {
+    // console.log('FoodForm wird gerendert');
+    const [newFood, setNewFood] = useState<NewFood>(initialNewFoodState);
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const [isFetchingBarcode, setIsFetchingBarcode] = useState(false);
+    const [isScannerOpen, setIsScannerOpen] = useState(false);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    useEffect(() => {
+        if (foodToEdit) {
+            setEditingId(foodToEdit.id);
+            setNewFood({
+                name: foodToEdit.name,
+                brands: foodToEdit.brands,
+                expiryDate: foodToEdit.expiryDate,
+                storageDate: foodToEdit.storageDate,
+                location: foodToEdit.location,
+                quantity: foodToEdit.quantity,
+                barcode: foodToEdit.barcode || '',
+                image: foodToEdit.image || ''
+            });
+        } else {
+            setEditingId(null);
+            setNewFood(initialNewFoodState);
+        }
+    }, [foodToEdit, initialNewFoodState]);
+
+    const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+        const {name, value} = e.target;
+        setNewFood(prev => ({...prev, [name]: name === 'quantity' ? (parseInt(value, 10) || 1) : value}));
+    };
+
+    const handleFetchBarcodeData = async (barcodeToFetch?: string) => {
+        if (isFetchingBarcode) return;
+        const barcode = barcodeToFetch || newFood.barcode;
+        if (!barcode) {
+            onShowError({visible: true, message: 'Bitte geben Sie einen Barcode ein.'});
+            return;
+        }
+        setIsFetchingBarcode(true);
+        try {
+            const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode}.json`);
+            if (!response.ok) {
+                onShowError({visible: true, message: 'Netzwerkantwort war nicht ok.'});
+                return;
+            }
+            const data = await response.json();
+            if (data.status === 1) {
+                const product = data.product;
+                setNewFood(prev => ({
+                    ...prev,
+                    name: product.product_name || prev.name,
+                    brands: product.brands || prev.brands,
+                    barcode: barcode,
+                    image: product.image_small_url || prev.image
+                }));
+            } else {
+                onShowError({visible: true, message: 'Produkt nicht gefunden. Bitte manuell eingeben.'});
+            }
+        } catch (error) {
+            console.error('Fehler beim Abrufen der Produktdaten:', error);
+            onShowError({visible: true, message: 'Fehler beim Abrufen der Produktdaten.'});
+        } finally {
+            setIsFetchingBarcode(false);
+        }
+    };
+
+    const handleScanSuccess = (decodedText: string) => {
+        if (decodedText && isScannerOpen) {
+            setIsScannerOpen(false);
+            setNewFood(prev => ({...prev, barcode: decodedText}));
+            void handleFetchBarcodeData(decodedText);
+        }
+    };
+
+    const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+        e.preventDefault();
+        setIsSubmitting(true);
+        await onAddOrUpdateFood(newFood, editingId);
+        setIsSubmitting(false);
+    };
+
+    return (
+        <>
+            {isScannerOpen && (
+                <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
+                    <div className="bg-white p-4 rounded-lg shadow-xl w-full max-w-md relative">
+                        <h3 className="text-lg font-bold text-center mb-4">Barcode scannen</h3>
+                        <BarcodeScannerComponent onScanSuccess={handleScanSuccess}/>
+                        <button
+                            onClick={() => setIsScannerOpen(false)}
+                            className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
+                            title="Scanner schließen"
+                        >
+                            <X className="h-5 w-5"/>
+                        </button>
+                    </div>
+                </div>
+            )}
+            <form onSubmit={handleSubmit} className="space-y-4">
+                {/* Formular zum Hinzufügen/Bearbeiten */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        <div className="md:col-span-2">
+                            <label htmlFor="barcode" className="text-sm font-medium text-gray-700">Barcode</label>
+                            <div className="flex space-x-2 mt-1">
+                                <input
+                                    type="text"
+                                    id="barcode"
+                                    name="barcode"
+                                disabled={isFetchingBarcode || isSubmitting}
+                                    value={newFood.barcode}
+                                    onChange={handleInputChange}
+                                    enterKeyHint="search"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            // Verhindert, dass das Hauptformular abgeschickt wird
+                                            e.preventDefault();
+                                            // Ruft die Daten nur ab, wenn ein Barcode vorhanden ist
+                                            if (newFood.barcode) {
+                                                void handleFetchBarcodeData();
+                                            }
+                                        }
+                                    }}
+                                    placeholder="Barcode eingeben oder scannen"
+                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => void handleFetchBarcodeData()}
+                                disabled={isSubmitting || isFetchingBarcode || !newFood.barcode}
+                                    className="p-2 w-10 h-10 flex items-center justify-center bg-gray-200 text-gray-700 rounded-lg shadow-sm hover:bg-gray-300 transition duration-200 disabled:bg-gray-100 disabled:text-gray-400"
+                                    title="Produktdaten abrufen"
+                                >
+                                    {isFetchingBarcode ? (
+                                        <svg className="animate-spin h-5 w-5 text-gray-700"
+                                             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10"
+                                                    stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor"
+                                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                    ) : <Search className="h-5 w-5"/>}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setIsScannerOpen(true)}
+                                disabled={isSubmitting || isFetchingBarcode}
+                                    className="p-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition duration-200 disabled:bg-gray-400"
+                                    title="Kamera-Scanner öffnen"
+                                >
+                                    <Camera className="h-5 w-5"/>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label htmlFor="quantity" className="text-sm font-medium text-gray-700">Menge <span
+                                className="text-red-500">*</span></label>
+                            <input
+                                type="number"
+                                id="quantity"
+                                name="quantity"
+                                disabled={isSubmitting}
+                                value={newFood.quantity}
+                                onChange={handleInputChange}
+                                min="1"
+                                required
+                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                            />
+                        </div>
+
+                        <div>
+                            <label htmlFor="brands" className="text-sm font-medium text-gray-700">Marke</label>
+                            <input
+                                type="text"
+                                id="brands"
+                                name="brands"
+                                disabled={isFetchingBarcode || isSubmitting}
+                                value={newFood.brands}
+                                onChange={handleInputChange}
+                                placeholder="Markenname"
+                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                            />
+                        </div>
+
+                        <div>
+                            <label htmlFor="name" className="text-sm font-medium text-gray-700">Name <span
+                                className="text-red-500">*</span></label>
+                            <input
+                                type="text"
+                                id="name"
+                                name="name"
+                                disabled={isFetchingBarcode || isSubmitting}
+                                value={newFood.name}
+                                onChange={handleInputChange}
+                                placeholder="Name des Lebensmittels"
+                                required
+                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                            />
+                        </div>
+
+                        <div>
+                            <label htmlFor="expiryDate"
+                                   className="text-sm font-medium text-gray-700">Ablaufdatum</label>
+                            <input
+                                type="date"
+                                id="expiryDate"
+                                name="expiryDate"
+                                disabled={isSubmitting}
+                                value={newFood.expiryDate}
+                                onChange={handleInputChange}
+                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                            />
+                        </div>
+
+                        <div>
+                            <label htmlFor="storageDate"
+                                   className="text-sm font-medium text-gray-700">Einlagerungsdatum <span
+                                className="text-red-500">*</span></label>
+                            <input
+                                type="date"
+                                id="storageDate"
+                                name="storageDate"
+                                disabled={isSubmitting}
+                                value={newFood.storageDate}
+                                onChange={handleInputChange}
+                                required
+                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                            />
+                        </div>
+
+                        <div>
+                            <label htmlFor="location" className="text-sm font-medium text-gray-700">Lagerort <span
+                                className="text-red-500">*</span></label>
+                            <input
+                                type="text"
+                                id="location"
+                                name="location"
+                                disabled={isSubmitting}
+                                value={newFood.location}
+                                onChange={handleInputChange}
+                                list="location-suggestions"
+                                placeholder="Lagerort (z.B. Kühlschrank)"
+                                required
+                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                            />
+                            <datalist id="location-suggestions">
+                                {uniqueLocations.map(loc => (
+                                    <option key={loc} value={loc}/>
+                                ))}
+                            </datalist>
+                        </div>
+
+                        <div className="md:col-span-4 flex items-center gap-4">
+                            <button
+                                type="submit"
+                                disabled={isSubmitting || !newFood.name || !newFood.location || !newFood.quantity}
+                                className="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition duration-200 disabled:bg-gray-400 flex items-center justify-center space-x-2"
+                            >
+                                {isSubmitting ? 'Lädt...' : editingId ? 'Speichern' : 'Hinzufügen'}
+                                {!isSubmitting && !editingId && <Plus className="inline-block h-5 w-5"/>}
+                            </button>
+                            {editingId && (
+                                <button
+                                    type="button"
+                                    onClick={onCancelEdit}
+                                    disabled={isSubmitting}
+                                    className="w-full bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-gray-700 transition duration-200 disabled:bg-gray-400 flex items-center justify-center"
+                                >
+                                    Abbrechen
+                                </button>
+                            )}
+                        </div>
+                    </div>
+            </form>
+        </>
+    );
+});
+FoodForm.displayName = 'FoodForm';
+
+export default App;
