@@ -1,4 +1,4 @@
-import React, {useEffect, useRef} from 'react';
+import React, {useEffect} from 'react';
 import {Html5QrcodeScanner, Html5QrcodeScanType, Html5QrcodeSupportedFormats} from 'html5-qrcode';
 
 // Hilfsfunktion zur Validierung von EAN-8 und EAN-13 Barcodes mittels Prüfsumme.
@@ -32,16 +32,7 @@ interface BarcodeScannerComponentProps {
 }
 
 const BarcodeScannerComponent: React.FC<BarcodeScannerComponentProps> = (props) => {
-    // Ein Ref, um die `props` zu speichern. Dies ermöglicht den Zugriff auf die neuesten
-    // Callback-Funktionen im `useEffect`, ohne sie zur Abhängigkeitsliste hinzufügen zu müssen,
-    // was Probleme im Strict Mode (doppeltes rendern) verhindert.
-    const propsRef = useRef(props);
     useEffect(() => {
-        propsRef.current = props;
-    });
-
-    useEffect(() => {
-
         const scanner = new Html5QrcodeScanner('reader', {
             fps: 10,
             qrbox: {width: 250, height: 150},
@@ -66,7 +57,7 @@ const BarcodeScannerComponent: React.FC<BarcodeScannerComponentProps> = (props) 
             if (isValidEan(decodedText)) {
                 console.log(`Gültiger EAN-Code erkannt: ${decodedText}`);
                 // Ruft den eigentlichen Success-Handler der Elternkomponente auf.
-                propsRef.current.onScanSuccess(decodedText, decodedResult);
+                props.onScanSuccess(decodedText, decodedResult);
             } else {
                 // Optional: Ignorierte Scans für Debugging-Zwecke protokollieren.
                 // Dies hilft zu sehen, was der Scanner "denkt", stört aber den Benutzer nicht.
@@ -79,7 +70,7 @@ const BarcodeScannerComponent: React.FC<BarcodeScannerComponentProps> = (props) 
             if (error.includes("not found")) {
                 return;
             }
-            propsRef.current.onScanFailure?.(error);
+            props.onScanFailure?.(error);
         };
 
         scanner.render(onScanSuccessWrapper, onScanFailureWrapper);
@@ -90,7 +81,7 @@ const BarcodeScannerComponent: React.FC<BarcodeScannerComponentProps> = (props) 
                 console.error("Fehler beim Bereinigen des Scanners:", error);
             });
         };
-    }, []); // Leeres Array stellt sicher, dass dieser Effekt nur einmal ausgeführt wird.
+    }, [props.onScanSuccess, props.onScanFailure]); // Abhängigkeiten hinzugefügt, um stabile Funktionen zu nutzen
 
     // Wir fügen einen <style>-Block hinzu, um die von der Bibliothek generierten UI-Elemente anzupassen.
     // Dies gibt uns die Kontrolle über das Aussehen, ohne die Logik der Bibliothek zu verlieren.

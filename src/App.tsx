@@ -19,6 +19,7 @@ interface Food {
     location: string;
     quantity: number;
     barcode: string;
+    category?: string; // Optionales Feld für die Kategorie
     image: string;
 }
 
@@ -67,26 +68,29 @@ const isExpiringInOneWeek = (date: string) => {
     return isBefore(expiryDate, sevenDaysFromNow);
 };
 
-
 // Lade Konfiguration aus den Environment-Variablen (für Vite mit VITE_ Prefix)
 const appId = import.meta.env.VITE_APP_ID || 'default-app-id';
 const firebaseConfigString = import.meta.env.VITE_FIREBASE_CONFIG;
 const firebaseConfig = firebaseConfigString ? JSON.parse(firebaseConfigString) : {};
 
+// Definiere den initialen Zustand für neue Lebensmittel außerhalb der Komponente.
+// Dadurch wird sichergestellt, dass das Objekt nicht bei jedem Render neu erstellt wird,
+// was unnötige Neu-Renderings von Kindkomponenten (wie FoodForm) verhindert.
+const initialNewFoodState: NewFood = {
+    name: '',
+    brands: '',
+    expiryDate: '',
+    storageDate: format(new Date(), 'yyyy-MM-dd'),
+    location: '',
+    quantity: 1,
+    barcode: '',
+    image: ''
+};
+
 // Die Haupt-App-Komponente
 function App() {
     // console.log('App-Komponente wird neu gerendert...');
     const [foods, setFoods] = useState<Food[]>([]);
-    const initialNewFoodState: NewFood = {
-        name: '',
-        brands: '',
-        expiryDate: '',
-        storageDate: format(new Date(), 'yyyy-MM-dd'),
-        location: '',
-        quantity: 1,
-        barcode: '',
-        image: ''
-    };
     const [loading, setLoading] = useState(true);
     const [isAuthReady, setIsAuthReady] = useState(false);
     const [userId, setUserId] = useState<string | null>(null);
@@ -100,6 +104,9 @@ function App() {
     const [foodForDetails, setFoodForDetails] = useState<FoodDetails | null>(null);
     const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
+    const [isSearchScannerOpen, setIsSearchScannerOpen] = useState(false)
+    const [searchTerm, setSearchTerm] = useState('');
+    const [sortConfig, setSortConfig] = useState({key: 'expiryDate', direction: 'asc'});
 
     const [db, setDb] = useState<Firestore | null>(null); // Firestore instance
     const [foodToEdit, setFoodToEdit] = useState<Food | null>(null);
@@ -188,7 +195,7 @@ function App() {
     }, [isAuthReady, db, userId]); // <-- WICHTIG: userId als Abhängigkeit hinzufügen
 
     // Handler zum Hinzufügen/Aktualisieren eines Lebensmittels
-    const handleAddOrUpdateFood = async (foodData: NewFood, editingId: string | null) => {
+    const handleAddOrUpdateFood = useCallback(async (foodData: NewFood, editingId: string | null) => {
         if (!db) {
             console.error('Firestore ist nicht verfügbar.');
             return;
@@ -225,7 +232,7 @@ function App() {
                 console.error('Fehler beim Hinzufügen/Aktualisieren des Eintrags:', e);
             }
         }
-    };
+    }, [db, foods, appId]);
 
     // Handler zum Bearbeiten eines Eintrags
     const handleEdit = useCallback((food: Food) => {
@@ -233,9 +240,9 @@ function App() {
         window.scroll(0, 0)
     }, []);
 
-    const handleCancelEdit = () => {
+    const handleCancelEdit = useCallback(() => {
         setFoodToEdit(null);
-    };
+    }, []);
 
     // Handler zum Löschen eines Eintrags (bestätigen)
     const handleDeleteConfirm = useCallback((food: Food) => {
@@ -244,7 +251,7 @@ function App() {
     }, []);
 
     // Handler zum Ausführen des Löschvorgangs
-    const handleDelete = async () => {
+    const handleDelete = useCallback(async () => {
         if (!db || !foodToDelete) {
             console.error('Firestore oder zu löschender Eintrag ist nicht verfügbar.');
             return;
@@ -260,7 +267,7 @@ function App() {
         setShowDeleteModal(false);
         setFoodToDelete(null);
         setLoading(false);
-    };
+    }, [db, foodToDelete, appId]);
 
     const handleShowDetails = useCallback(async (food: Food) => {
         setFoodForDetails(food); // Set basic food info first
@@ -298,7 +305,7 @@ function App() {
     }, []);
 
     // Handler für den Login
-    const handleLogin = async (e: FormEvent<HTMLFormElement>) => {
+    const handleLogin = useCallback(async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         setAuthError(null);
         setLoading(true);
@@ -311,23 +318,67 @@ function App() {
             setAuthError("Login fehlgeschlagen. Bitte E-Mail und Passwort überprüfen.");
         }
         setLoading(false);
-    };
+    }, [email, password]);
 
     // Handler für den Logout
-    const handleLogout = async () => {
+    const handleLogout = useCallback(async () => {
         const authService = getAuth();
         try {
             await signOut(authService);
         } catch (error) {
             console.error("Logout fehlgeschlagen:", error);
         }
-    };
+    }, []);
 
     const uniqueLocations = useMemo(() => {
         // Erstellt eine Liste eindeutiger, sortierter Lagerorte aus den vorhandenen Lebensmitteln.
         const locations = new Set(foods.map(food => food.location).filter(Boolean));
         return Array.from(locations).sort();
     }, [foods]);
+
+    const uniqueCategories = useMemo(() => {
+        // Erstellt eine Liste eindeutiger, sortierter Kategorien.
+        const categories = new Set(foods.map(food => food.category).filter(Boolean) as string[]);
+        return Array.from(categories).sort();
+    }, [foods]);
+
+    const handleSearchScanSuccess = (decodedText: string) => {
+        if (decodedText) {
+            setIsSearchScannerOpen(false);
+            setSearchTerm(decodedText);
+        }
+    };
+
+    const sortedAndFilteredFoods = useMemo(() => {
+        const filtered = foods.filter(food =>
+            (food.name && food.name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+            (food.brands && food.brands.toLowerCase().includes(searchTerm.toLowerCase())) ||
+            (food.location && food.location.toLowerCase().includes(searchTerm.toLowerCase())) ||
+            (food.barcode && food.barcode.includes(searchTerm)) ||
+            (food.category && food.category.toLowerCase().includes(searchTerm.toLowerCase()))
+        );
+
+        return [...filtered].sort((a, b) => {
+            const key = sortConfig.key as keyof Food;
+            const valA = a[key];
+            const valB = b[key];
+            const aHasValue = valA !== null && valA !== undefined && valA !== '';
+            const bHasValue = valB !== null && valB !== undefined && valB !== '';
+
+            if (aHasValue && !bHasValue) return -1;
+            if (!aHasValue && bHasValue) return 1;
+            if (!aHasValue && !bHasValue) return 0;
+
+            let comparison;
+            if (key === 'expiryDate' || key === 'storageDate') {
+                comparison = new Date(valA as string).getTime() - new Date(valB as string).getTime();
+            } else {
+                comparison = String(valA).localeCompare(String(valB), undefined, {numeric: true});
+            }
+            return sortConfig.direction === 'asc' ? comparison : -comparison;
+        });
+    }, [foods, searchTerm, sortConfig]);
+
 
     if (!isAuthReady) {
         return (
@@ -411,6 +462,7 @@ function App() {
                         <p className="text-sm text-gray-600">Ablaufdatum: {food.expiryDate ? format(new Date(food.expiryDate), 'dd.MM.yyyy') : 'Unbekannt'}</p>
                         <p className="text-sm text-gray-600">Einlagerungsdatum: {food.storageDate ? format(new Date(food.storageDate), 'dd.MM.yyyy') : 'Unbekannt'}</p>
                         <p className="text-sm text-gray-600">Lagerort: {food.location}</p>
+                        {food.category && <p className="text-sm text-gray-600">Kategorie: {food.category}</p>}
                         <p className="text-sm text-gray-600">Menge: {food.quantity}</p>
                     </div>
                 </div>
@@ -444,136 +496,22 @@ function App() {
     });
     FoodListItem.displayName = 'FoodListItem';
 
-    const FoodListSection = memo(({foods, onEdit, onDelete, onShowDetails, loading}: {
-        foods: Food[],
+    const FoodListSection = memo(({filteredFoods, onEdit, onDelete, onShowDetails, loading}: {
+        filteredFoods: Food[],
         onEdit: (food: Food) => void,
         onDelete: (food: Food) => void,
         onShowDetails: (food: Food) => void,
         loading: boolean
     }) => {
         // console.log('FoodListSection wird gerendert');
-        const [searchTerm, setSearchTerm] = useState('');
-        const [sortConfig, setSortConfig] = useState({key: 'expiryDate', direction: 'asc'});
-        const [isSearchScannerOpen, setIsSearchScannerOpen] = useState(false);
-
-        const handleSearchScanSuccess = (decodedText: string) => {
-            if (decodedText) {
-                setIsSearchScannerOpen(false);
-                setSearchTerm(decodedText);
-            }
-        };
-
-        const sortedAndFilteredFoods = useMemo(() => {
-            // console.time('Berechnung der Lebensmittelliste');
-            const filtered = foods.filter(food =>
-                (food.name && food.name.toLowerCase().includes(searchTerm.toLowerCase())) ||
-                (food.brands && food.brands.toLowerCase().includes(searchTerm.toLowerCase())) ||
-                (food.location && food.location.toLowerCase().includes(searchTerm.toLowerCase())) ||
-                (food.barcode && food.barcode.includes(searchTerm))
-            );
-
-            const sorted = [...filtered].sort((a, b) => {
-                const key = sortConfig.key as keyof Food;
-                const valA = a[key];
-                const valB = b[key];
-                const aHasValue = valA !== null && valA !== '';
-                const bHasValue = valB !== null && valB !== '';
-
-                if (aHasValue && !bHasValue) return -1;
-                if (!aHasValue && bHasValue) return 1;
-                if (!aHasValue && !bHasValue) return 0;
-
-                let comparison;
-                if (key === 'expiryDate' || key === 'storageDate') {
-                    comparison = new Date(valA as string).getTime() - new Date(valB as string).getTime();
-                } else {
-                    comparison = String(valA).localeCompare(String(valB), undefined, {numeric: true});
-                }
-                return sortConfig.direction === 'asc' ? comparison : -comparison;
-            });
-            // console.timeEnd('Berechnung der Lebensmittelliste');
-            return sorted;
-        }, [foods, searchTerm, sortConfig]);
-
         return (
-            <>
-                {/* Search Scanner Modal */}
-                {isSearchScannerOpen && (
-                    <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
-                        <div className="bg-white p-4 rounded-lg shadow-xl w-full max-w-md relative">
-                            <h3 className="text-lg font-bold text-center mb-4">Barcode für Suche scannen</h3>
-                            <BarcodeScannerComponent onScanSuccess={handleSearchScanSuccess}/>
-                            <button
-                                onClick={() => setIsSearchScannerOpen(false)}
-                                className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
-                                title="Scanner schließen"
-                            >
-                                <X className="h-5 w-5"/>
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* Suchleiste */}
-                <div className="relative mt-8">
-                    <div className="flex items-center space-x-2">
-                        <div className="relative flex-grow">
-                            <input
-                                type="text"
-                                placeholder="Suchen nach Name, Marke, Lagerort oder Barcode..."
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="w-full px-4 py-2 pl-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400"/>
-                        </div>
-                        <button type="button" onClick={() => setIsSearchScannerOpen(true)}
-                                className="p-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition duration-200"
-                                title="Barcode für Suche scannen">
-                            <Camera className="h-5 w-5"/>
-                        </button>
-                    </div>
-                </div>
-
-                {/* Lebensmittelliste */}
-                <div className="mt-8">
-                    <div className="flex justify-between items-center mb-4">
-                        <h2 className="text-2xl font-bold text-gray-700">Ihre Lebensmittel</h2>
-                        <div className="flex items-center space-x-2">
-                            <label htmlFor="sort-select" className="text-sm font-medium text-gray-700">Sortieren
-                                nach:</label>
-                            <select
-                                id="sort-select"
-                                value={sortConfig.key}
-                                onChange={(e) => setSortConfig({...sortConfig, key: e.target.value})}
-                                className="px-3 py-1.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 transition duration-200 text-sm"
-                            >
-                                <option value="expiryDate">Ablaufdatum</option>
-                                <option value="name">Name</option>
-                                <option value="storageDate">Einlagerungsdatum</option>
-                                <option value="location">Lagerort</option>
-                                <option value="brands">Marke</option>
-                                <option value="quantity">Menge</option>
-                            </select>
-                            <button
-                                onClick={() => setSortConfig({
-                                    ...sortConfig,
-                                    direction: sortConfig.direction === 'asc' ? 'desc' : 'asc'
-                                })}
-                                className="p-2 text-gray-600 rounded-full hover:bg-gray-200 transition"
-                                title={`Sortierreihenfolge umschalten (${sortConfig.direction === 'asc' ? 'aufsteigend' : 'absteigend'})`}
-                            >
-                                {sortConfig.direction === 'asc' ? <ArrowUp className="h-5 w-5"/> :
-                                    <ArrowDown className="h-5 w-5"/>}
-                            </button>
-                        </div>
-                    </div>
+            <div className="mt-8">
                     {loading && <p className="text-center text-gray-500">Lädt...</p>}
-                    {!loading && sortedAndFilteredFoods.length === 0 &&
+                    {!loading && filteredFoods.length === 0 &&
                         <p className="text-center text-gray-500">Keine Lebensmittel gefunden.</p>}
-                    {!loading && sortedAndFilteredFoods.length > 0 && (
+                    {!loading && filteredFoods.length > 0 && (
                         <div className="space-y-4">
-                            {sortedAndFilteredFoods.map((food) => (
+                            {filteredFoods.map((food) => (
                                 <FoodListItem
                                     key={food.id}
                                     food={food}
@@ -585,7 +523,6 @@ function App() {
                         </div>
                     )}
                 </div>
-            </>
         );
     });
     FoodListSection.displayName = 'FoodListSection';
@@ -610,12 +547,88 @@ function App() {
                     foodToEdit={foodToEdit}
                     onCancelEdit={handleCancelEdit}
                     uniqueLocations={uniqueLocations}
+                    uniqueCategories={uniqueCategories}
                     initialNewFoodState={initialNewFoodState}
                     onShowError={setShowErrorModal}
                 />
 
-                <FoodListSection foods={foods} onEdit={handleEdit} onDelete={handleDeleteConfirm}
-                                 onShowDetails={handleShowDetails} loading={loading}/>
+                {/* Search Scanner Modal */}
+                {isSearchScannerOpen && (
+                    <div className="fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
+                        <div className="bg-white p-4 rounded-lg shadow-xl w-full max-w-md relative">
+                            <h3 className="text-lg font-bold text-center mb-4">Barcode für Suche scannen</h3>
+                            <BarcodeScannerComponent onScanSuccess={handleSearchScanSuccess}/>
+                            <button
+                                onClick={() => setIsSearchScannerOpen(false)}
+                                className="absolute top-2 right-2 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition"
+                                title="Scanner schließen"
+                            >
+                                <X className="h-5 w-5"/>
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Such- und Sortierleiste */}
+                <div className="relative mt-8">
+                    <div className="flex items-center space-x-2">
+                        <div className="relative flex-grow">
+                            <input
+                                type="text"
+                                placeholder="Suchen nach Name, Marke, Ort, Kategorie..."
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                className="w-full px-4 py-2 pl-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                            />
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400"/>
+                        </div>
+                        <button type="button" onClick={() => setIsSearchScannerOpen(true)}
+                                className="p-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition duration-200"
+                                title="Barcode für Suche scannen">
+                            <Camera className="h-5 w-5"/>
+                        </button>
+                    </div>
+                </div>
+
+                {/* Header für die Lebensmittelliste mit Sortieroptionen */}
+                <div className="flex justify-between items-center mt-8 mb-4">
+                    <h2 className="text-2xl font-bold text-gray-700">Ihre Lebensmittel</h2>
+                    <div className="flex items-center space-x-2">
+                        <label htmlFor="sort-select" className="text-sm font-medium text-gray-700">Sortieren
+                            nach:</label>
+                        <select
+                            id="sort-select"
+                            value={sortConfig.key}
+                            onChange={(e) => setSortConfig({...sortConfig, key: e.target.value})}
+                            className="px-3 py-1.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 transition duration-200 text-sm"
+                        >
+                            <option value="expiryDate">Ablaufdatum</option>
+                            <option value="name">Name</option>
+                            <option value="storageDate">Einlagerungsdatum</option>
+                            <option value="location">Lagerort</option>
+                            <option value="brands">Marke</option>
+                            <option value="category">Kategorie</option>
+                            <option value="quantity">Menge</option>
+                        </select>
+                        <button
+                            onClick={() => setSortConfig({
+                                ...sortConfig,
+                                direction: sortConfig.direction === 'asc' ? 'desc' : 'asc'
+                            })}
+                            className="p-2 text-gray-600 rounded-full hover:bg-gray-200 transition"
+                            title={`Sortierreihenfolge umschalten (${sortConfig.direction === 'asc' ? 'aufsteigend' : 'absteigend'})`}
+                        >
+                            {sortConfig.direction === 'asc' ? <ArrowUp className="h-5 w-5"/> :
+                                <ArrowDown className="h-5 w-5"/>}
+                        </button>
+                    </div>
+                </div>
+
+                <FoodListSection filteredFoods={sortedAndFilteredFoods}
+                                 onEdit={handleEdit}
+                                 onDelete={handleDeleteConfirm}
+                                 onShowDetails={handleShowDetails}
+                                 loading={loading}/>
 
             </div>
 
@@ -807,11 +820,12 @@ function App() {
     );
 }
 
-const FoodForm = memo(({onAddOrUpdateFood, foodToEdit, onCancelEdit, uniqueLocations, initialNewFoodState, onShowError}: {
+const FoodForm = memo(({onAddOrUpdateFood, foodToEdit, onCancelEdit, uniqueLocations, uniqueCategories, initialNewFoodState, onShowError}: {
     onAddOrUpdateFood: (foodData: NewFood, editingId: string | null) => Promise<void>,
     foodToEdit: Food | null,
     onCancelEdit: () => void,
     uniqueLocations: string[],
+    uniqueCategories: string[],
     initialNewFoodState: NewFood,
     onShowError: (error: { visible: boolean, message: string }) => void
 }) => {
@@ -833,6 +847,7 @@ const FoodForm = memo(({onAddOrUpdateFood, foodToEdit, onCancelEdit, uniqueLocat
                 location: foodToEdit.location,
                 quantity: foodToEdit.quantity,
                 barcode: foodToEdit.barcode || '',
+                category: foodToEdit.category || '',
                 image: foodToEdit.image || ''
             });
         } else {
@@ -862,7 +877,7 @@ const FoodForm = memo(({onAddOrUpdateFood, foodToEdit, onCancelEdit, uniqueLocat
             }
             const data = await response.json();
             if (data.status === 1) {
-                const product = data.product;
+                const product = data["product"];
                 setNewFood(prev => ({
                     ...prev,
                     name: product.product_name || prev.name,
@@ -892,7 +907,7 @@ const FoodForm = memo(({onAddOrUpdateFood, foodToEdit, onCancelEdit, uniqueLocat
     const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         setIsSubmitting(true);
-        await onAddOrUpdateFood(newFood, editingId);
+        await onAddOrUpdateFood(newFood, editingId); // Ruft den Handler aus der App-Komponente auf
         setIsSubmitting(false);
     };
 
@@ -915,179 +930,199 @@ const FoodForm = memo(({onAddOrUpdateFood, foodToEdit, onCancelEdit, uniqueLocat
             )}
             <form onSubmit={handleSubmit} className="space-y-4">
                 {/* Formular zum Hinzufügen/Bearbeiten */}
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-                        <div className="md:col-span-2">
-                            <label htmlFor="barcode" className="text-sm font-medium text-gray-700">Barcode</label>
-                            <div className="flex space-x-2 mt-1">
-                                <input
-                                    type="text"
-                                    id="barcode"
-                                    name="barcode"
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                    <div className="md:col-span-2">
+                        <label htmlFor="barcode" className="text-sm font-medium text-gray-700">Barcode</label>
+                        <div className="flex space-x-2 mt-1">
+                            <input
+                                type="text"
+                                id="barcode"
+                                name="barcode"
                                 disabled={isFetchingBarcode || isSubmitting}
-                                    value={newFood.barcode}
-                                    onChange={handleInputChange}
-                                    enterKeyHint="search"
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                            // Verhindert, dass das Hauptformular abgeschickt wird
-                                            e.preventDefault();
-                                            // Ruft die Daten nur ab, wenn ein Barcode vorhanden ist
-                                            if (newFood.barcode) {
-                                                void handleFetchBarcodeData();
-                                            }
+                                value={newFood.barcode}
+                                onChange={handleInputChange}
+                                enterKeyHint="search"
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        // Verhindert, dass das Hauptformular abgeschickt wird
+                                        e.preventDefault();
+                                        // Ruft die Daten nur ab, wenn ein Barcode vorhanden ist
+                                        if (newFood.barcode) {
+                                            void handleFetchBarcodeData();
                                         }
-                                    }}
-                                    placeholder="Barcode eingeben oder scannen"
-                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                                />
-                                <button
-                                    type="button"
-                                    onClick={() => void handleFetchBarcodeData()}
-                                disabled={isSubmitting || isFetchingBarcode || !newFood.barcode}
-                                    className="p-2 w-10 h-10 flex items-center justify-center bg-gray-200 text-gray-700 rounded-lg shadow-sm hover:bg-gray-300 transition duration-200 disabled:bg-gray-100 disabled:text-gray-400"
-                                    title="Produktdaten abrufen"
-                                >
-                                    {isFetchingBarcode ? (
-                                        <svg className="animate-spin h-5 w-5 text-gray-700"
-                                             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                            <circle className="opacity-25" cx="12" cy="12" r="10"
-                                                    stroke="currentColor" strokeWidth="4"></circle>
-                                            <path className="opacity-75" fill="currentColor"
-                                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
-                                    ) : <Search className="h-5 w-5"/>}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setIsScannerOpen(true)}
-                                disabled={isSubmitting || isFetchingBarcode}
-                                    className="p-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition duration-200 disabled:bg-gray-400"
-                                    title="Kamera-Scanner öffnen"
-                                >
-                                    <Camera className="h-5 w-5"/>
-                                </button>
-                            </div>
-                        </div>
-
-                        <div>
-                            <label htmlFor="quantity" className="text-sm font-medium text-gray-700">Menge <span
-                                className="text-red-500">*</span></label>
-                            <input
-                                type="number"
-                                id="quantity"
-                                name="quantity"
-                                disabled={isSubmitting}
-                                value={newFood.quantity}
-                                onChange={handleInputChange}
-                                min="1"
-                                required
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                                    }
+                                }}
+                                placeholder="Barcode eingeben oder scannen"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
                             />
-                        </div>
-
-                        <div>
-                            <label htmlFor="brands" className="text-sm font-medium text-gray-700">Marke</label>
-                            <input
-                                type="text"
-                                id="brands"
-                                name="brands"
-                                disabled={isFetchingBarcode || isSubmitting}
-                                value={newFood.brands}
-                                onChange={handleInputChange}
-                                placeholder="Markenname"
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
-
-                        <div>
-                            <label htmlFor="name" className="text-sm font-medium text-gray-700">Name <span
-                                className="text-red-500">*</span></label>
-                            <input
-                                type="text"
-                                id="name"
-                                name="name"
-                                disabled={isFetchingBarcode || isSubmitting}
-                                value={newFood.name}
-                                onChange={handleInputChange}
-                                placeholder="Name des Lebensmittels"
-                                required
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
-
-                        <div>
-                            <label htmlFor="expiryDate"
-                                   className="text-sm font-medium text-gray-700">Ablaufdatum</label>
-                            <input
-                                type="date"
-                                id="expiryDate"
-                                name="expiryDate"
-                                disabled={isSubmitting}
-                                value={newFood.expiryDate}
-                                onChange={handleInputChange}
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
-
-                        <div>
-                            <label htmlFor="storageDate"
-                                   className="text-sm font-medium text-gray-700">Einlagerungsdatum <span
-                                className="text-red-500">*</span></label>
-                            <input
-                                type="date"
-                                id="storageDate"
-                                name="storageDate"
-                                disabled={isSubmitting}
-                                value={newFood.storageDate}
-                                onChange={handleInputChange}
-                                required
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                        </div>
-
-                        <div>
-                            <label htmlFor="location" className="text-sm font-medium text-gray-700">Lagerort <span
-                                className="text-red-500">*</span></label>
-                            <input
-                                type="text"
-                                id="location"
-                                name="location"
-                                disabled={isSubmitting}
-                                value={newFood.location}
-                                onChange={handleInputChange}
-                                list="location-suggestions"
-                                placeholder="Lagerort (z.B. Kühlschrank)"
-                                required
-                                className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                            />
-                            <datalist id="location-suggestions">
-                                {uniqueLocations.map(loc => (
-                                    <option key={loc} value={loc}/>
-                                ))}
-                            </datalist>
-                        </div>
-
-                        <div className="md:col-span-4 flex items-center gap-4">
                             <button
-                                type="submit"
-                                disabled={isSubmitting || !newFood.name || !newFood.location || !newFood.quantity}
-                                className="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition duration-200 disabled:bg-gray-400 flex items-center justify-center space-x-2"
+                                type="button"
+                                onClick={() => void handleFetchBarcodeData()}
+                                disabled={isSubmitting || isFetchingBarcode || !newFood.barcode}
+                                className="p-2 w-10 h-10 flex items-center justify-center bg-gray-200 text-gray-700 rounded-lg shadow-sm hover:bg-gray-300 transition duration-200 disabled:bg-gray-100 disabled:text-gray-400"
+                                title="Produktdaten abrufen"
                             >
-                                {isSubmitting ? 'Lädt...' : editingId ? 'Speichern' : 'Hinzufügen'}
-                                {!isSubmitting && !editingId && <Plus className="inline-block h-5 w-5"/>}
+                                {isFetchingBarcode ? (
+                                    <svg className="animate-spin h-5 w-5 text-gray-700"
+                                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10"
+                                                stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor"
+                                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                ) : <Search className="h-5 w-5"/>}
                             </button>
-                            {editingId && (
-                                <button
-                                    type="button"
-                                    onClick={onCancelEdit}
-                                    disabled={isSubmitting}
-                                    className="w-full bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-gray-700 transition duration-200 disabled:bg-gray-400 flex items-center justify-center"
-                                >
-                                    Abbrechen
-                                </button>
-                            )}
+                            <button
+                                type="button"
+                                onClick={() => setIsScannerOpen(true)}
+                                disabled={isSubmitting || isFetchingBarcode}
+                                className="p-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition duration-200 disabled:bg-gray-400"
+                                title="Kamera-Scanner öffnen"
+                            >
+                                <Camera className="h-5 w-5"/>
+                            </button>
                         </div>
                     </div>
+
+                    <div>
+                        <label htmlFor="quantity" className="text-sm font-medium text-gray-700">Menge <span
+                            className="text-red-500">*</span></label>
+                        <input
+                            type="number"
+                            id="quantity"
+                            name="quantity"
+                            disabled={isSubmitting}
+                            value={newFood.quantity}
+                            onChange={handleInputChange}
+                            min="1"
+                            required
+                            className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                        />
+                    </div>
+
+                    <div>
+                        <label htmlFor="brands" className="text-sm font-medium text-gray-700">Marke</label>
+                        <input
+                            type="text"
+                            id="brands"
+                            name="brands"
+                            disabled={isFetchingBarcode || isSubmitting}
+                            value={newFood.brands}
+                            onChange={handleInputChange}
+                            placeholder="Markenname"
+                            className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                        />
+                    </div>
+
+                    <div>
+                        <label htmlFor="name" className="text-sm font-medium text-gray-700">Name <span
+                            className="text-red-500">*</span></label>
+                        <input
+                            type="text"
+                            id="name"
+                            name="name"
+                            disabled={isFetchingBarcode || isSubmitting}
+                            value={newFood.name}
+                            onChange={handleInputChange}
+                            placeholder="Name des Lebensmittels"
+                            required
+                            className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                        />
+                    </div>
+
+                    <div>
+                        <label htmlFor="category" className="text-sm font-medium text-gray-700">Kategorie</label>
+                        <input
+                            type="text"
+                            id="category"
+                            name="category"
+                            disabled={isSubmitting}
+                            value={newFood.category || ''}
+                            onChange={handleInputChange}
+                            list="category-suggestions"
+                            placeholder="z.B. Obst, Gemüse, Molkerei"
+                            className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                        />
+                        <datalist id="category-suggestions">
+                            {uniqueCategories.map(cat => (
+                                <option key={cat} value={cat}/>
+                            ))}
+                        </datalist>
+                    </div>
+
+                    <div>
+                        <label htmlFor="expiryDate"
+                               className="text-sm font-medium text-gray-700">Ablaufdatum</label>
+                        <input
+                            type="date"
+                            id="expiryDate"
+                            name="expiryDate"
+                            disabled={isSubmitting}
+                            value={newFood.expiryDate}
+                            onChange={handleInputChange}
+                            className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                        />
+                    </div>
+
+                    <div>
+                        <label htmlFor="storageDate"
+                               className="text-sm font-medium text-gray-700">Einlagerungsdatum <span
+                            className="text-red-500">*</span></label>
+                        <input
+                            type="date"
+                            id="storageDate"
+                            name="storageDate"
+                            disabled={isSubmitting}
+                            value={newFood.storageDate}
+                            onChange={handleInputChange}
+                            required
+                            className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                        />
+                    </div>
+
+                    <div>
+                        <label htmlFor="location" className="text-sm font-medium text-gray-700">Lagerort <span
+                            className="text-red-500">*</span></label>
+                        <input
+                            type="text"
+                            id="location"
+                            name="location"
+                            disabled={isSubmitting}
+                            value={newFood.location}
+                            onChange={handleInputChange}
+                            list="location-suggestions"
+                            placeholder="Lagerort (z.B. Kühlschrank)"
+                            required
+                            className="w-full px-4 py-2 mt-1 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                        />
+                        <datalist id="location-suggestions">
+                            {uniqueLocations.map(loc => (
+                                <option key={loc} value={loc}/>
+                            ))}
+                        </datalist>
+                    </div>
+
+                    <div className="md:col-span-4 flex items-center gap-4">
+                        <button
+                            type="submit"
+                            disabled={isSubmitting || !newFood.name || !newFood.location || !newFood.quantity}
+                            className="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition duration-200 disabled:bg-gray-400 flex items-center justify-center space-x-2"
+                        >
+                            {isSubmitting ? 'Lädt...' : editingId ? 'Speichern' : 'Hinzufügen'}
+                            {!isSubmitting && !editingId && <Plus className="inline-block h-5 w-5"/>}
+                        </button>
+                        {editingId && (
+                            <button
+                                type="button"
+                                onClick={onCancelEdit}
+                                disabled={isSubmitting}
+                                className="w-full bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-gray-700 transition duration-200 disabled:bg-gray-400 flex items-center justify-center"
+                            >
+                                Abbrechen
+                            </button>
+                        )}
+                    </div>
+                </div>
             </form>
         </>
     );
